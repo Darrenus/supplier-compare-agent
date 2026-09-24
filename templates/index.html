@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Supplier Comparison Agent</title>
+  <style>
+    :root { --bg:#0f172a; --card:#1e293b; --accent:#38bdf8; --text:#e2e8f0; --muted:#94a3b8; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+           margin: 0; background: var(--bg); color: var(--text); }
+    .wrap { max-width: 880px; margin: 0 auto; padding: 32px 20px 64px; }
+    h1 { font-size: 1.6rem; margin-bottom: 4px; }
+    .sub { color: var(--muted); margin-top: 0; }
+    form { margin: 24px 0; display: flex; gap: 12px; align-items: center; }
+    select, button { font-size: 1rem; padding: 10px 14px; border-radius: 8px; border: none; }
+    select { background: var(--card); color: var(--text); }
+    button { background: var(--accent); color: #04283a; font-weight: 600; cursor: pointer; }
+    .flag { background: #7f1d1d; color: #fecaca; padding: 10px 14px; border-radius: 8px;
+            margin: 16px 0; font-size: 0.9rem; }
+    .card { background: var(--card); border-radius: 12px; padding: 18px 20px; margin: 14px 0;
+            border-left: 4px solid var(--accent); }
+    .rank { font-size: 0.8rem; color: var(--muted); }
+    .name { font-size: 1.15rem; font-weight: 600; }
+    .score { float: right; font-variant-numeric: tabular-nums; color: var(--accent); font-weight: 700; }
+    details { margin-top: 10px; }
+    summary { cursor: pointer; color: var(--accent); }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.9rem; }
+    td { padding: 4px 8px; border-bottom: 1px solid #334155; }
+    td.dim { color: var(--muted); }
+    .bar { display: inline-block; height: 8px; background: var(--accent); border-radius: 4px; vertical-align: middle; }
+    .rationale { white-space: pre-wrap; background: #0b1220; padding: 14px; border-radius: 8px;
+                 margin-top: 20px; font-size: 0.92rem; color: var(--text); }
+    .meta { color: var(--muted); font-size: 0.8rem; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Supplier Comparison Agent</h1>
+    <p class="sub">Team "Show Me Your Token" &middot; recommends only, never places orders (human-in-the-loop).</p>
+
+    <form method="post">
+      <label for="sku">SKU:</label>
+      <select id="sku" name="sku">
+        {% for sku in skus %}
+          <option value="{{ sku }}" {% if sku == selected_sku %}selected{% endif %}>{{ sku }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit">Compare suppliers</button>
+    </form>
+
+    {% if result %}
+      {% if result.injection_flag %}
+        <div class="flag">&#9888; Prompt-injection detected in supplier data. It was isolated as untrusted DATA and did NOT influence the ranking.</div>
+      {% endif %}
+
+      {% for item in result.top %}
+        <div class="card">
+          <span class="score">{{ '%.3f'|format(item.score) }}</span>
+          <div class="rank">#{{ loop.index }}</div>
+          <div class="name">{{ item.supplier }} <span class="rank">({{ item.supplier_id }})</span></div>
+          <details>
+            <summary>Why this supplier?</summary>
+            <table>
+              {% for dim, val in item.breakdown.items() %}
+                <tr>
+                  <td class="dim">{{ dim }}</td>
+                  <td><span class="bar" style="width: {{ (val * 140)|int }}px"></span> {{ '%.2f'|format(val) }}</td>
+                </tr>
+              {% endfor %}
+            </table>
+          </details>
+        </div>
+      {% endfor %}
+
+      <div class="rationale">{{ result.rationale }}</div>
+      <div class="meta">request_id: {{ result.request_id }} &middot; output validated: {{ result.validated }}</div>
+    {% endif %}
+  </div>
+</body>
+</html>

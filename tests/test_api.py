@@ -45,6 +45,15 @@ def fake_agent(monkeypatch):
 
 # ---- read-only endpoints -------------------------------------------------- #
 
+def test_placeholder_gateway_key_counts_as_unset(monkeypatch):
+    monkeypatch.setenv("LLM_GATEWAY_URL", "https://example.invalid")
+    monkeypatch.setenv("LLM_MODEL", "test-model")
+    monkeypatch.setenv("LLM_GATEWAY_API_KEY", "your-team-api-key-here")
+    assert gateway_client.has_gateway_key() is False
+    monkeypatch.setenv("LLM_GATEWAY_API_KEY", "real-key")
+    assert gateway_client.has_gateway_key() is True
+
+
 def test_health(client):
     resp = client.get("/api/health")
     assert resp.status_code == 200
@@ -158,13 +167,15 @@ def test_recommend_passes_only_eligible_quotes(client, fake_agent):
 
 
 def test_recommend_injection_flag_covers_excluded_quotes(client, fake_agent):
-    # SUP-004 (flagged) has a 25-day lead time, so a 24-day cap excludes it.
+    # SUP-004 and SUP-007 (both flagged) have 25/28-day lead times, so a 24-day
+    # cap excludes them.
     body = {"sku": "BRK-100", "max_lead_time_days": 24}
     resp = client.post("/api/recommend", json=body)
     assert resp.status_code == 200
     payload = resp.get_json()
-    assert "SUP-004" not in [r["supplier_id"] for r in payload["compare"]["ranked"]]
-    assert payload["compare"]["injection_suppliers"] == ["SUP-004"]
+    ranked_ids = [r["supplier_id"] for r in payload["compare"]["ranked"]]
+    assert "SUP-004" not in ranked_ids and "SUP-007" not in ranked_ids
+    assert payload["compare"]["injection_suppliers"] == ["SUP-004", "SUP-007"]
     assert payload["agent"]["injection_flag"] is True
 
 def test_recommend_agent_top_matches_compare_ranking(client):

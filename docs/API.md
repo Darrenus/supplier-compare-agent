@@ -152,8 +152,8 @@ Notes for consumers:
   in its own way.
 - `injection_suppliers` covers **all** quotes, including excluded ones.
   `ranked[i].injection_flag` is true when that supplier is in the list. The
-  detector only has English patterns; the Chinese injection from SUP-007 is
-  not caught yet (tracked in `tests/test_compare.py`).
+  detector has English and Chinese patterns, so both SUP-004 and SUP-007 are
+  flagged.
 - If every quote is excluded, `ranked` is `[]` and `winner_supplier_id` is
   `null` (status 200).
 - Changing the weights can change the winner: `{"weights": {"price": 0.8}}`

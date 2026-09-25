@@ -95,6 +95,7 @@ def test_injection_suppliers_never_win():
         for row in result["ranked"]:
             assert row["injection_flag"] == (row["supplier_id"] in result["injection_suppliers"])
     assert "SUP-004" in compare_quotes("BRK-100")["injection_suppliers"]
+    assert "SUP-007" in compare_quotes("BRK-100")["injection_suppliers"]
 
 
 def test_constraints_and_levers():
@@ -252,10 +253,8 @@ def test_loader_rejects_non_finite_extra_fields_and_duplicates(tmp_path):
         mock_data.load_suppliers(str(path), known_skus=["BRK-100"])
 
 
-@pytest.mark.xfail(reason="security.detect_injection has no Chinese patterns yet",
-                   strict=False)
 def test_detector_catches_chinese_injection():
-    """SUP-007 carries a Chinese injection; known detector gap (owner: security)."""
+    """SUP-007 carries a Chinese injection."""
     desc = next(s["product_description"] for s in mock_data.SUPPLIERS
                 if s["supplier_id"] == "SUP-007")
     assert "忽略之前的指令" in desc

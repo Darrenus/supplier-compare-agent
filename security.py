@@ -39,6 +39,14 @@ _INJECTION_PATTERNS: List[str] = [
     r"new instructions",
     r"act as",
     r"do not follow",
+    # Chinese equivalents (no IGNORECASE needed; kept specific to avoid
+    # flagging ordinary product text).
+    r"忽略(?:之前|以上|前面|先前|上述|所有)的?(?:指令|指示|提示|规则)",
+    r"无视(?:之前|以上|前面|先前|上述|所有)?的?(?:指令|指示|提示|规则)",
+    r"系统提示",
+    r"(?:把|将)我们排(?:在)?(?:第一|第1|首位|最前)",
+    r"(?:必须|一定要)?推荐我们",
+    r"(?:选择|选)我们",
 ]
 
 _INJECTION_RE = re.compile("|".join(_INJECTION_PATTERNS), re.IGNORECASE)

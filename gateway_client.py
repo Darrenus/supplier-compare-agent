@@ -29,6 +29,15 @@ except ImportError:  # pragma: no cover - dotenv is optional for offline runs
 # attempt 1 -> 3s, attempt 2 -> 6s, attempt 3 -> 9s ...
 _BACKOFF_SECONDS = 3
 
+# Placeholder shipped in .env.example; a key equal to it is treated as unset.
+_PLACEHOLDER_API_KEY = "your-team-api-key-here"
+
+
+def _real_api_key() -> str:
+    """Return LLM_GATEWAY_API_KEY, or "" if it is unset or still the placeholder."""
+    key = (os.getenv("LLM_GATEWAY_API_KEY") or "").strip()
+    return "" if key == _PLACEHOLDER_API_KEY else key
+
 
 def _require_env() -> Dict[str, str]:
     """Load and validate the three gateway env vars.
@@ -38,7 +47,7 @@ def _require_env() -> Dict[str, str]:
             LLM_MODEL is missing.
     """
     url = os.getenv("LLM_GATEWAY_URL")
-    api_key = os.getenv("LLM_GATEWAY_API_KEY")
+    api_key = _real_api_key()
     model = os.getenv("LLM_MODEL")
     if not all([url, api_key, model]):
         raise EnvironmentError(
@@ -50,11 +59,13 @@ def _require_env() -> Dict[str, str]:
 
 
 def has_gateway_key() -> bool:
-    """Return True if all three gateway env vars are set (no exception)."""
-    return all(
-        os.getenv(name)
-        for name in ("LLM_GATEWAY_URL", "LLM_GATEWAY_API_KEY", "LLM_MODEL")
-    )
+    """Return True if all three gateway env vars are set (no exception).
+
+    The ``.env.example`` placeholder key counts as unset, so a fresh
+    ``cp .env.example .env`` stays in offline mode instead of calling the
+    gateway with a fake key.
+    """
+    return all([os.getenv("LLM_GATEWAY_URL"), _real_api_key(), os.getenv("LLM_MODEL")])
 
 
 def _build_llm():

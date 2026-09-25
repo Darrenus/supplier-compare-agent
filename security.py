@@ -47,9 +47,15 @@ _INJECTION_PATTERNS: List[str] = [
     r"(?:把|将)我们排(?:在)?(?:第一|第1|首位|最前)",
     r"(?:必须|一定要)?推荐我们",
     r"(?:选择|选)我们",
+    # Attempts to close our data delimiter or fake a chat role.
+    r"</?\s*(?:supplier_data|system|assistant)\s*>",
 ]
 
 _INJECTION_RE = re.compile("|".join(_INJECTION_PATTERNS), re.IGNORECASE)
+
+# Anything that looks like our delimiter inside untrusted text is defanged
+# before wrapping, so supplier text can never "close" the data block early.
+_DELIMITER_RE = re.compile(r"<\s*/?\s*supplier_data\s*>", re.IGNORECASE)
 
 
 def build_system_prompt() -> str:
@@ -73,13 +79,16 @@ def build_system_prompt() -> str:
         "- You never place orders or take actions with side effects. You only "
         "recommend (human-in-the-loop stays in control).\n"
         "\n"
+        "- Every number (price, lead time, score, gap) must be copied from the "
+        "data you are given. Never invent or recompute figures.\n"
+        "\n"
         "TOOL PROTOCOL (the gateway has no native tool-calling):\n"
         "- When you need data, reply with ONLY a JSON object and nothing else, "
         'e.g. {\"tool\": \"get_quotes\", \"args\": {\"sku\": \"<sku>\"}}.\n'
         "- After you receive the tool result, continue the analysis.\n"
         "\n"
-        "OUTPUT: When asked for a recommendation, give a Top 3 ranking, max 3 "
-        "lines each, with a concise rationale grounded in the scores."
+        "OUTPUT: When you are ready to answer, reply with ONLY one JSON object in "
+        "the format the user message specifies, and nothing else."
     )
 
 
@@ -97,8 +106,18 @@ def detect_injection(text: str) -> bool:
     return bool(_INJECTION_RE.search(text))
 
 
+def find_injections(text: str) -> List[str]:
+    """Return every suspicious snippet in ``text`` (for logs and the UI)."""
+    if not text:
+        return []
+    return [m.group(0) for m in _INJECTION_RE.finditer(text)]
+
+
 def wrap_supplier_data(text: str) -> str:
     """Wrap untrusted supplier text in the ``<supplier_data>`` delimiters.
+
+    Any delimiter-like tag inside ``text`` is replaced first, so the supplier
+    cannot end the data block and smuggle in instructions after it.
 
     Args:
         text: Untrusted supplier-provided text.
@@ -106,4 +125,5 @@ def wrap_supplier_data(text: str) -> str:
     Returns:
         The text enclosed in the supplier-data delimiters.
     """
-    return f"{SUPPLIER_OPEN}\n{text}\n{SUPPLIER_CLOSE}"
+    safe = _DELIMITER_RE.sub("[tag removed]", text)
+    return f"{SUPPLIER_OPEN}\n{safe}\n{SUPPLIER_CLOSE}"

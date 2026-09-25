@@ -38,8 +38,13 @@ The gateway is **Ollama-compatible** and fronts **Claude Sonnet 4.5**. It
 authenticates via the `X-API-Key` header and has **no native tool-calling**, so
 the model is instructed to reply with ONLY a JSON tool request which we parse
 and execute manually (mirroring the starter kit's `test_llm_gateway.py`). Rapid
-requests can return `403` (rate limit); `gateway_client.invoke_with_retry()`
-retries with linear backoff (3s, 6s, 9s).
+requests can return `403` (rate limit); `gateway_client.chat_with_usage()`
+retries with linear backoff (3s, 6s, 9s). Requests over ~8 KiB are rejected by
+the gateway WAF, so the agent keeps prompts compact and falls back to the
+deterministic recommendation instead of sending an oversized request.
+
+Connectivity check: `python gateway_client.py` (prints `OK ... gateway ok`).
+Agent from the command line: `python agent.py BRK-100 [--weights price=0.6] [--json]`.
 
 ## Guardrails & observability (judging rubric)
 

@@ -177,16 +177,40 @@ curl -s -X POST localhost:8080/api/recommend -H 'Content-Type: application/json'
     "request_id": "req-c445b649",
     "top": [ ...first 3 of scores... ],
     "scores": [ ...same row shape as compare.ranked, without injection_flag... ],
-    "rationale": "Top 3 by objective weighted score:\n1. Acme Precision Parts (SUP-001) - score 0.675\n2. Pacific Rim Trading (SUP-005) - score 0.5167\n3. Harbourfront Engineering (SUP-006) - score 0.45",
+    "rationale": "Recommended: Acme Precision Parts (SUP-001)\n...\n\nNegotiation points:\n- ...\n\nRisks:\n- ...",
     "injection_flag": false,
-    "validated": true
+    "validated": true,
+    "recommendation": {
+      "recommended_supplier_id": "SUP-001",
+      "recommended_supplier": "Acme Precision Parts",
+      "rationale": "Acme has the highest weighted score (0.675): SGD 12.50/unit, ...",
+      "negotiation_points": ["Lead time is 9d longer than Harbourfront Engineering (5d) — ask for expedited slots or buffer stock"],
+      "risks": []
+    },
+    "source": "llm",
+    "injection_details": {},
+    "tool_calls": [],
+    "usage": {"llm_calls": 1, "input_tokens": 1450, "output_tokens": 180},
+    "errors": []
   }
 }
 ```
 
-- When no gateway key is set, `agent.rationale` is the fixed offline text
-  shown above. When a key is set, it is the LLM narration, and `validated`
-  says whether that narration names a real supplier.
+- `agent.recommendation` is the structured answer; render its fields
+  directly (e.g. a "Negotiation points" list). `agent.rationale` is the same
+  content as one plain-text block, for the HTML page. `recommendation` is
+  `null` only when there are no eligible quotes.
+- `agent.source` says who wrote the text:
+  - `"llm"`: the model's answer, which passed output validation (it must
+    recommend the #1 supplier by score and only name suppliers in the input).
+  - `"offline"`: no gateway key; a template built from the scores and levers.
+  - `"fallback"`: a key is set but the gateway failed or the model's answer
+    was rejected twice; the same template is shown and `agent.errors` says why.
+    `validated` is `false` only in this case.
+- `agent.injection_details` maps each flagged `supplier_id` to the matched
+  snippets. Flagged descriptions are redacted before anything is sent to the LLM.
+- The recommended supplier is always `agent.top[0]`: the LLM explains the
+  ranking but cannot change it.
 - The agent only sees the quotes that pass `quantity` / `max_lead_time_days`,
   with the same normalized weights. `agent.top` / `agent.scores` therefore
   match `compare.ranked` (same suppliers, order and scores), and the
@@ -194,7 +218,9 @@ curl -s -X POST localhost:8080/api/recommend -H 'Content-Type: application/json'
   the agent gets an empty list, and `agent.top` is `[]`.
 - `agent.injection_flag` is true when any quote for the SKU was flagged,
   including excluded ones, so it matches `compare.injection_suppliers != []`.
-- If the agent fails, the response is 502 and still includes the numbers:
+- Gateway errors do not fail the request: the agent returns `source:
+  "fallback"` with status 200. A 502 now means an unexpected bug in the
+  agent. The response still includes the numbers:
   `{"error": "agent narration failed (RuntimeError)", "compare": {...}}`.
 
 ## Python API: `agent.compare(sku, quotes=None, weights=None)`

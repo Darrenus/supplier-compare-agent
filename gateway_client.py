@@ -1,20 +1,25 @@
 # -*- coding: utf-8 -*-
 """Thin wrapper around the shared AWS LLM Gateway.
 
-The gateway is Ollama-compatible and fronts Claude Sonnet 4.5. It authenticates
-via the ``X-API-Key`` header and does NOT support native tool-calling, so callers
-must instruct the model to emit a JSON tool request and parse it manually (see
-``agent.py``).
+The gateway fronts Claude Sonnet 4.5 and speaks two protocols:
+  * Ollama-compatible  ``POST {LLM_GATEWAY_URL}/api/chat``            (default)
+  * OpenAI-compatible  ``POST {LLM_GATEWAY_URL}/v1/chat/completions``
+Set ``LLM_GATEWAY_API=openai`` in ``.env`` to use the second one. Auth is the
+``X-API-Key`` header. Neither protocol honours native tool-calling, so callers
+must instruct the model to emit a JSON tool request and parse it manually
+(see ``agent.py``).
 
-This module mirrors the request approach used by the starter kit's
-``test_llm_gateway.py`` (``ChatOllama`` + ``X-API-Key`` header +
-``invoke_with_retry`` with linear backoff for 403 rate-limits).
+We call the gateway with plain ``requests`` (as the starter kit's
+``direct_ollama_gateway_tool_calling_step_by_step.ipynb`` does) instead of
+``ChatOllama``: fewer moving parts, and we get the token counts back.
 """
 from __future__ import annotations
 
+import json
 import os
+import sys
 import time
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 try:
     # Best-effort: load .env if python-dotenv is installed. The deterministic
@@ -31,6 +36,19 @@ _BACKOFF_SECONDS = 3
 
 # Placeholder shipped in .env.example; a key equal to it is treated as unset.
 _PLACEHOLDER_API_KEY = "your-team-api-key-here"
+
+# The ALB answers rapid successive calls with 403, so 403 is retried too.
+_RETRYABLE_STATUS = {403, 408, 429, 500, 502, 503, 504}
+
+# The ALB's WAF rejects request bodies above ~8 KiB with a bare 403, which
+# retrying cannot fix. Warn so the cause is obvious in the server log.
+WAF_BODY_LIMIT = 8 * 1024
+
+_TIMEOUT_SECONDS = 120
+
+
+class GatewayError(RuntimeError):
+    """The gateway could not be reached or returned an unusable response."""
 
 
 def _real_api_key() -> str:
@@ -68,30 +86,52 @@ def has_gateway_key() -> bool:
     return all([os.getenv("LLM_GATEWAY_URL"), _real_api_key(), os.getenv("LLM_MODEL")])
 
 
-def _build_llm():
-    """Construct a ChatOllama client pointed at the gateway.
-
-    ``langchain_ollama`` is imported lazily so purely deterministic callers
-    (scoring/injection eval) can run without the LLM SDK installed.
-    """
-    from langchain_ollama import ChatOllama
-
-    cfg = _require_env()
-    return ChatOllama(
-        model=cfg["model"],
-        base_url=cfg["url"],
-        temperature=0.4,
-        num_predict=2000,
-        client_kwargs={"headers": {"X-API-Key": cfg["api_key"]}},
-    )
+def _protocol() -> str:
+    proto = (os.getenv("LLM_GATEWAY_API") or "ollama").strip().lower()
+    if proto not in ("ollama", "openai"):
+        raise EnvironmentError(f"LLM_GATEWAY_API must be 'ollama' or 'openai', got {proto!r}")
+    return proto
 
 
-def invoke_with_retry(messages: List[Dict[str, str]], max_retries: int = 5,
-                      backoff: int = _BACKOFF_SECONDS):
-    """Invoke the gateway, retrying transient failures with linear backoff.
+def endpoint(base_url: str, protocol: str) -> str:
+    """Full chat URL for ``base_url`` (with or without a trailing ``/v1``)."""
+    root = base_url.rstrip("/")
+    if root.endswith("/v1"):
+        root = root[:-3]
+    return f"{root}/v1/chat/completions" if protocol == "openai" else f"{root}/api/chat"
 
-    The gateway's ALB rate-limits rapid successive calls and returns 403; we
-    wait ``backoff * attempt`` seconds (3s, 6s, 9s ...) between attempts.
+
+def _payload(protocol: str, model: str, messages: List[Dict[str, str]],
+             temperature: float, max_tokens: int) -> Dict:
+    if protocol == "openai":
+        return {"model": model, "messages": messages, "stream": False,
+                "temperature": temperature, "max_tokens": max_tokens}
+    return {"model": model, "messages": messages, "stream": False,
+            "options": {"temperature": temperature, "num_predict": max_tokens}}
+
+
+def _parse(protocol: str, body: Dict) -> Tuple[str, Dict[str, int]]:
+    """Return ``(text, usage)`` from a gateway response body."""
+    try:
+        if protocol == "openai":
+            text = body["choices"][0]["message"]["content"]
+            usage = body.get("usage") or {}
+            return text or "", {"input_tokens": usage.get("prompt_tokens", 0),
+                                "output_tokens": usage.get("completion_tokens", 0)}
+        text = body["message"]["content"]
+        return text or "", {"input_tokens": body.get("prompt_eval_count", 0),
+                            "output_tokens": body.get("eval_count", 0)}
+    except (KeyError, IndexError, TypeError):
+        raise GatewayError(f"unexpected gateway response: {str(body)[:300]}") from None
+
+
+def chat_with_usage(messages: List[Dict[str, str]], max_retries: int = 5,
+                    backoff: int = _BACKOFF_SECONDS, temperature: float = 0.2,
+                    max_tokens: int = 1500) -> Tuple[str, Dict[str, int]]:
+    """Send chat messages to the gateway; return ``(reply_text, usage)``.
+
+    Transient failures (403 rate-limit, 429, 5xx, network errors) are retried
+    with linear backoff: ``backoff * attempt`` seconds (3s, 6s, 9s ...).
 
     Args:
         messages: Chat messages as ``{"role": ..., "content": ...}`` dicts.
@@ -99,37 +139,63 @@ def invoke_with_retry(messages: List[Dict[str, str]], max_retries: int = 5,
         backoff: Base backoff in seconds (multiplied by the attempt number).
 
     Returns:
-        The raw ChatOllama response message.
+        The assistant reply text and ``{"input_tokens", "output_tokens"}``.
+
+    Raises:
+        EnvironmentError: if the gateway env vars are missing.
+        GatewayError: if every attempt failed or the response is malformed.
     """
-    llm = _build_llm()
+    import requests  # lazy: offline callers never need it
+
+    cfg = _require_env()
+    proto = _protocol()
+    url = endpoint(cfg["url"], proto)
+    data = json.dumps(_payload(proto, cfg["model"], messages, temperature, max_tokens),
+                      ensure_ascii=False).encode("utf-8")
+    if len(data) > WAF_BODY_LIMIT:
+        print(f">>> Warning: request body is {len(data)} bytes; the gateway WAF may "
+              f"reject bodies over {WAF_BODY_LIMIT} bytes with 403.", file=sys.stderr)
+    headers = {"Content-Type": "application/json", "X-API-Key": cfg["api_key"]}
+
+    last_error = "no attempt made"
     for attempt in range(1, max_retries + 1):
         try:
-            return llm.invoke(messages)
-        except Exception as exc:  # noqa: BLE001 - gateway raises varied errors
-            if attempt == max_retries:
-                raise
+            resp = requests.post(url, data=data, headers=headers, timeout=_TIMEOUT_SECONDS)
+        except requests.RequestException as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+        else:
+            if resp.ok:
+                try:
+                    body = resp.json()
+                except ValueError:
+                    raise GatewayError(f"gateway returned non-JSON: {resp.text[:300]}") from None
+                return _parse(proto, body)
+            last_error = f"HTTP {resp.status_code}: {resp.text[:300]}"
+            if resp.status_code not in _RETRYABLE_STATUS:
+                raise GatewayError(last_error)
+        if attempt < max_retries:
             wait = backoff * attempt
-            print(f">>> Attempt {attempt} failed ({type(exc).__name__}), "
-                  f"retrying in {wait}s...")
+            print(f">>> Attempt {attempt} failed ({last_error[:80]}), retrying in {wait}s...",
+                  file=sys.stderr)
             time.sleep(wait)
+    raise GatewayError(f"gateway failed after {max_retries} attempts: {last_error}")
 
 
 def chat(messages: List[Dict[str, str]]) -> str:
-    """Send chat messages to the gateway and return the model's text reply.
+    """Send chat messages to the gateway and return the model's text reply."""
+    return chat_with_usage(messages)[0]
 
-    Args:
-        messages: Chat messages as ``{"role": ..., "content": ...}`` dicts.
 
-    Returns:
-        The assistant reply as plain text.
-    """
-    reply = invoke_with_retry(messages)
-    content = reply.content
-    if isinstance(content, list):
-        # Some backends return content blocks; concatenate the text parts.
-        return "".join(
-            block.get("text", "")
-            for block in content
-            if isinstance(block, dict) and block.get("type") == "text"
-        )
-    return content
+if __name__ == "__main__":
+    # Connectivity smoke test (Sprint 0):  python gateway_client.py
+    try:
+        cfg = _require_env()
+        print(f"POST {endpoint(cfg['url'], _protocol())}  model={cfg['model']}")
+        started = time.time()
+        text, usage = chat_with_usage(
+            [{"role": "user", "content": "Reply with exactly: gateway ok"}],
+            max_retries=2, max_tokens=20)
+    except (EnvironmentError, GatewayError) as exc:
+        print(f"FAIL: {exc}")
+        sys.exit(1)
+    print(f"OK in {time.time() - started:.1f}s -> {text.strip()!r}  usage={usage}")

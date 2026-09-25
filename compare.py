@@ -98,7 +98,8 @@ def _levers_for(quote: Mapping, best: Mapping[str, Dict],
         })
 
     b = best["price"]
-    gap = round((quote["unit_price"] - b["value"]) / b["value"] * 100, 1)
+    # A zero benchmark price has no meaningful percentage gap; skip the lever.
+    gap = round((quote["unit_price"] - b["value"]) / b["value"] * 100, 1) if b["value"] > 0 else 0
     if gap > 0:
         add("price", gap, "%", b,
             f"Price is {gap:.1f}% above {b['supplier']} ({currency} {b['value']:.2f})"

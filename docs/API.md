@@ -192,6 +192,8 @@ curl -s -X POST localhost:8080/api/recommend -H 'Content-Type: application/json'
   match `compare.ranked` (same suppliers, order and scores), and the
   narration never names an excluded supplier. If every quote is excluded,
   the agent gets an empty list, and `agent.top` is `[]`.
+- `agent.injection_flag` is true when any quote for the SKU was flagged,
+  including excluded ones, so it matches `compare.injection_suppliers != []`.
 - If the agent fails, the response is 502 and still includes the numbers:
   `{"error": "agent narration failed (RuntimeError)", "compare": {...}}`.
 

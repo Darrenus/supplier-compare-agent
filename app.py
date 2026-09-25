@@ -173,6 +173,10 @@ def api_recommend():
         app.logger.exception("agent.compare failed for %s", kwargs["sku"])
         return _error(f"agent narration failed ({type(exc).__name__})", 502,
                       compare=result)
+    # The agent only scans eligible quotes; also flag injections from excluded
+    # ones so agent.injection_flag agrees with compare.injection_suppliers.
+    agent_result["injection_flag"] = (bool(agent_result.get("injection_flag"))
+                                      or bool(result["injection_suppliers"]))
     return jsonify({"compare": result, "agent": agent_result})
 
 

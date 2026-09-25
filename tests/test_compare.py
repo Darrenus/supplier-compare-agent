@@ -169,6 +169,14 @@ def test_hand_made_price_gap_is_exact():
     assert "Price is 15.0% above Name S1 (SGD 10.00)" in gaps["S2"]["price"]["text"]
 
 
+def test_zero_benchmark_price_skips_price_lever():
+    quotes = [_quote("S1", 0.0), _quote("S2", 1.0)]
+    result = compare_quotes("TEST-9", quotes=quotes)
+    dims = {e["supplier_id"]: [lv["dimension"] for lv in e["levers"]]
+            for e in result["negotiation_levers"]}
+    assert "price" not in dims["S1"]
+    assert "price" not in dims["S2"]
+
 def test_moq_headroom_lever():
     result = compare_quotes("TEST-9", quotes=[_quote("S1", 10.0, moq=100)], quantity=110)
     lever = result["negotiation_levers"][0]["levers"][0]

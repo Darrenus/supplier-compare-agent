@@ -157,6 +157,16 @@ def test_recommend_passes_only_eligible_quotes(client, fake_agent):
     assert [q["supplier_id"] for q in fake_agent[0]["quotes"]] == ranked_ids
 
 
+def test_recommend_injection_flag_covers_excluded_quotes(client, fake_agent):
+    # SUP-004 (flagged) has a 25-day lead time, so a 24-day cap excludes it.
+    body = {"sku": "BRK-100", "max_lead_time_days": 24}
+    resp = client.post("/api/recommend", json=body)
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert "SUP-004" not in [r["supplier_id"] for r in payload["compare"]["ranked"]]
+    assert payload["compare"]["injection_suppliers"] == ["SUP-004"]
+    assert payload["agent"]["injection_flag"] is True
+
 def test_recommend_agent_top_matches_compare_ranking(client):
     resp = client.post("/api/recommend",
                        json={"sku": "BRK-100", "quantity": 600, "max_lead_time_days": 20})

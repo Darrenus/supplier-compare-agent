@@ -1,7 +1,7 @@
 # Supplier Comparison Agent: System Design and Code Explanation
 
 Team **Show Me Your Token** (DAG1YLPM) · NUS-ISS "Show Me Your Agent" hackathon, Public track · Problem: *Supplier Comparison*
-Live demo: <http://56.10.70.203> · Draft write-up (source for the final PDF)
+Live demo: <http://56.10.70.203> · Repository: <https://github.com/Darrenus/supplier-compare-agent>
 
 ---
 
@@ -74,8 +74,9 @@ constraints, reads the explanation, and makes the decision.
 1. It runs the same steps as `/api/compare`, so invalid input fails with 400/404
    **before** any LLM call.
 2. It calls `agent.compare(sku, quotes=<eligible quotes only>, weights=<normalised
-   weights>)`. The agent therefore ranks exactly the same set with the same weights,
-   and cannot name an excluded supplier.
+   weights>, quantity=<order quantity>)`. The agent therefore ranks exactly the same
+   set with the same weights, cannot name an excluded supplier, and computes the same
+   negotiation levers as `/api/compare` (including the MOQ lever).
 3. The agent scans and redacts, scores, runs the tool-call loop, validates the answer
    (or falls back to a template), and logs the decision.
 4. The response is `{"compare": ..., "agent": ...}`. `agent.injection_flag` is also set
@@ -96,7 +97,7 @@ constraints, reads the explanation, and makes the decision.
 | LLM client | `gateway_client.py` | Ollama/OpenAI-compatible gateway calls, retries, token usage |
 | Observability | `observability.py` | Appends a decision record to `decisions.jsonl` |
 | Web + API | `app.py`, `templates/index.html` | Flask routes, JSON API, interactive page |
-| Evaluation | `eval/cases.py`, `eval/run_eval.py`, `tests/` | Golden + adversarial cases, 91 pytest tests |
+| Evaluation | `eval/cases.py`, `eval/run_eval.py`, `tests/`, `scripts/` | Golden + adversarial cases, 93 pytest tests, live-site checks |
 | Deployment | `deploy/` | Lightsail setup: gunicorn, nginx, systemd |
 
 ## 3. Data model and mock-data assumptions
@@ -216,7 +217,8 @@ tool-call protocol**:
 1. **Scan.** `security.find_injections` runs over every quote's `product_description`.
    It produces `flagged = {supplier_id: [matched snippets]}`.
 2. **Score.** `score_suppliers(quotes, weights)` returns `ranked`. Levers for the Top 3
-   are computed with the same `compare._levers_for` code.
+   are computed with the same `compare._levers_for` code and the same order quantity,
+   so they are identical to `compare.negotiation_levers`.
 3. **Prompt.** The system prompt (`security.build_system_prompt`) contains the security
    rules, the tool protocol, and the rule "copy every number, never invent or
    recompute". The user prompt contains, in this order:
@@ -265,7 +267,7 @@ tool-call protocol**:
    with OTD < 90%.
 7. **Log** a decision record (Section 7) and return `request_id`, `top`, `scores`,
    `recommendation`, `rationale`, `source`, `validated`, `injection_flag`,
-   `injection_details`, `tool_calls`, `usage`, `errors`.
+   `injection_details`, `negotiation_levers`, `tool_calls`, `usage`, `errors`.
 
 `gateway_client.py` calls the gateway directly with `requests`: Ollama `/api/chat` by
 default, or OpenAI `/v1/chat/completions`, with temperature 0.2 and at most 1500 output
@@ -327,7 +329,7 @@ browser.
 
 **Decision log (#6.A).** Every `agent.compare` call (the page and `/api/recommend`)
 appends one JSON line to `decisions.jsonl` (git-ignored) with these fields:
-`timestamp` (UTC), `request_id`, `inputs` {sku, num_quotes, weights, supplier_ids},
+`timestamp` (UTC), `request_id`, `inputs` {sku, num_quotes, weights, quantity, supplier_ids},
 `tool_calls` (each with args and any scope error), `scores` {supplier_id: score},
 `decision` (Top 3 ids), `recommended_supplier_id`, `rationale`, `injection_flag`,
 `injection_details`, `source` (llm/offline/fallback), `usage` {llm_calls,
@@ -352,7 +354,7 @@ offline.
 Result on the current code: **7/7 passed (100%)**. There is also 1 optional live-LLM
 case (`llm_narration_validates_supplier`), which is skipped when no gateway key is set.
 
-**Unit and API tests**, `pytest`: **91 passed** (test_api 34, test_compare 30,
+**Unit and API tests**, `pytest`: **93 passed** (test_api 36, test_compare 30,
 test_agent 21, test_scoring 6). `tests/conftest.py` forces offline mode and redirects
 the decision log, so tests never spend tokens. The agent tests replace the gateway with
 scripted replies and cover:
@@ -365,6 +367,17 @@ scripted replies and cover:
 - gateway failure
 - injected text never reaching the LLM, and delimiter break-out
 - prompt and tool follow-up sizes staying under the 8 KiB WAF limit
+- the agent's negotiation levers (including the MOQ lever) matching `/api/compare`
+
+**Live-site checks.** Two scripts run against the deployed site before a demo:
+- `scripts/check_live.py`: 13 HTTP checks (pages, every endpoint, all 5 SKUs, and
+  400/404 error paths).
+- `scripts/demo_scenarios.py`: the 7 demo scenarios with their expected winners,
+  exclusions, injection flags and error codes. It passes 7/7 on the live site.
+
+A live `/api/recommend` call on BRK-100 returned `source="llm"` and `validated=true`,
+with the injection flag set. It used 1 LLM call, about 5.7k input and 1.5k output
+tokens, and produced no errors.
 
 ## 8. Deployment
 
@@ -408,9 +421,7 @@ The body for both POST endpoints is `{"sku", "weights"?, "quantity"?,
 - **Single SKU per comparison.** Real sourcing events are often multi-SKU baskets with
   bundle pricing, split awards and supplier capacity limits.
 - **Scoring model.** Min-max scores are relative to the candidate set and sensitive to
-  outliers. Early-payment discounts and volume price breaks are not modelled. Agent
-  levers are computed without the order quantity, so the MOQ lever appears only in
-  `/api/compare`.
+  outliers. Early-payment discounts and volume price breaks are not modelled.
 - **Validation depth.** The validator enforces the recommended supplier, the schema and
   known supplier ids. Numbers inside the rationale are required by the prompt to be
   copied, but they are not re-checked in code. The injection detector is pattern-based,

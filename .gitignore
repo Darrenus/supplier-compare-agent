@@ -3,3 +3,8 @@
 __pycache__/
 *.pyc
 decisions.jsonl
+
+# OS / editor files
+.DS_Store
+.idea/
+.vscode/

@@ -10,14 +10,14 @@ beyond the read-only mock data, no logging.
 """
 from __future__ import annotations
 
-import math
 import numbers
 from typing import Dict, List, Mapping, Optional
 
 import security
 import tools
 from mock_data import PRODUCTS_BY_SKU
-from scoring import _parse_net_days, normalize_weights, score_suppliers
+from scoring import (_parse_net_days, is_finite_number, normalize_weights,
+                     score_suppliers, short_repr)
 
 # Levers are generated for the Top-N ranked suppliers.
 TOP_N_LEVERS = 3
@@ -43,8 +43,8 @@ def _check_positive(name: str, value: Optional[float]) -> None:
     if value is None:
         return
     if (isinstance(value, bool) or not isinstance(value, numbers.Real)
-            or not math.isfinite(value) or not value > 0):
-        raise ValueError(f"{name} must be a finite positive number, got {value!r}")
+            or not is_finite_number(value) or not value > 0):
+        raise ValueError(f"{name} must be a finite positive number, got {short_repr(value)}")
 
 
 def _name(quote: Mapping) -> str:
@@ -129,9 +129,12 @@ def _levers_for(quote: Mapping, best: Mapping[str, Dict],
 
     moq = quote.get("moq") or 0
     if quantity is not None and moq > 0 and moq <= quantity < moq * MOQ_HEADROOM_RATIO:
+        # The only lever whose gap can be 0: an order exactly at the MOQ.
         headroom = quantity - moq
+        position = (f"is exactly the MOQ {moq:g}" if headroom == 0
+                    else f"is only {headroom:g} units above MOQ {moq:g}")
         add("moq", headroom, "units", None,
-            f"Order quantity {quantity:g} is only {headroom:g} units above MOQ {moq:g}"
+            f"Order quantity {quantity:g} {position}"
             " — ask for a lower MOQ to keep flexibility")
 
     return levers
@@ -162,7 +165,7 @@ def compare_quotes(sku: str,
         UnknownSkuError: If the SKU is unknown and has no quotes (a
             ``KeyError`` subclass).
         ValueError: On invalid weights, quantity or max_lead_time_days, or
-            when two quotes share a supplier_id.
+            when two quotes share a supplier_id or mix currencies.
     """
     norm_weights = normalize_weights(weights)
     _check_positive("quantity", quantity)
@@ -179,6 +182,11 @@ def compare_quotes(sku: str,
             # Levers are paired with ranked rows by supplier_id, so ids must be unique.
             raise ValueError(f"duplicate quote for supplier {sid!r} on sku {sku!r}")
         seen_ids.add(sid)
+    # Prices are compared as plain numbers (no FX), so one currency per call.
+    currencies = sorted({q.get("currency") or "SGD" for q in quotes})
+    if len(currencies) > 1:
+        raise ValueError(f"quotes for sku {sku!r} mix currencies {currencies};"
+                         " convert them to one currency first")
 
     eligible: List[Dict] = []
     excluded: List[Dict] = []

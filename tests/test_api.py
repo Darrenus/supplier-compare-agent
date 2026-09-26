@@ -250,3 +250,29 @@ def test_index_route_unchanged(client, fake_agent):
     fake_agent_result = client.post("/", data={"sku": "GSK-200"})
     assert fake_agent_result.status_code == 200
     assert fake_agent == [{"sku": "GSK-200", "quotes": None, "weights": None}]
+
+
+# ---- regressions from the Sprint 3 bug hunt ------------------------------- #
+
+@pytest.mark.parametrize("field", ['"quantity":', '"max_lead_time_days":',
+                                   '"weights":{"price":'])
+def test_huge_json_int_is_400_not_500(client, monkeypatch, field):
+    """A 401-digit JSON integer used to raise OverflowError -> generic 500."""
+    monkeypatch.setitem(app.config, "PROPAGATE_EXCEPTIONS", False)
+    raw = '{"sku":"BRK-100",' + field + "1" + "0" * 400 + ("}}" if "{" in field[1:] else "}")
+    resp = client.post("/api/compare", data=raw, content_type="application/json")
+    assert resp.status_code == 400, resp.get_json()
+    assert "finite" in resp.get_json()["error"]
+
+
+def test_recommend_injection_details_cover_excluded_quotes(client):
+    """The page shows agent.injection_details[id] for every compare.injection_suppliers id."""
+    resp = client.post("/api/recommend", json={"sku": "BRK-100", "max_lead_time_days": 24})
+    assert resp.status_code == 200
+    body = resp.get_json()
+    flagged = body["compare"]["injection_suppliers"]
+    assert flagged == ["SUP-004", "SUP-007"]
+    details = body["agent"]["injection_details"]
+    assert sorted(details) == flagged
+    assert any("Ignore previous" in s for s in details["SUP-004"])
+    assert any("忽略之前的指令" in s for s in details["SUP-007"])

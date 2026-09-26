@@ -41,7 +41,9 @@ def _read_rows(path: str, required: Tuple[str, ...]) -> List[Tuple[int, Dict[str
     ``ValueError`` if any required column is missing or a row has more fields
     than the header.
     """
-    with open(path, newline="", encoding="utf-8") as fh:
+    # utf-8-sig: a CSV saved by Excel starts with a BOM, which would otherwise
+    # be glued to the first header name and make that column look missing.
+    with open(path, newline="", encoding="utf-8-sig") as fh:
         reader = csv.DictReader(fh)
         missing = [c for c in required if c not in (reader.fieldnames or [])]
         if missing:
@@ -104,11 +106,14 @@ def load_suppliers(path: str = QUOTES_CSV, known_skus: List[str] = ()) -> List[D
         quotes}`` in first-appearance order.
 
     Raises:
-        ValueError: On a malformed row or a duplicate (supplier_id, sku) pair.
+        ValueError: On a malformed row, a duplicate (supplier_id, sku) pair,
+            a supplier whose name / region / description differs between its
+            rows, or an SKU quoted in more than one currency.
     """
     by_id: Dict[str, Dict] = {}
     known = set(known_skus)
     seen_pairs = set()
+    currency_by_sku: Dict[str, str] = {}
     for row_no, row in _read_rows(path, _QUOTE_FIELDS):
         where = f"quotes.csv row {row_no}"
         if not row["supplier_id"]:
@@ -120,6 +125,14 @@ def load_suppliers(path: str = QUOTES_CSV, known_skus: List[str] = ()) -> List[D
             raise ValueError(f"{where}: duplicate quote for supplier "
                              f"{pair[0]!r} and sku {pair[1]!r}")
         seen_pairs.add(pair)
+        currency = row["currency"]
+        if not currency:
+            raise ValueError(f"{where}: empty currency")
+        # Prices are ranked as plain numbers (no FX), so one currency per SKU.
+        first_currency = currency_by_sku.setdefault(row["sku"], currency)
+        if currency != first_currency:
+            raise ValueError(f"{where}: currency {currency!r} differs from "
+                             f"{first_currency!r} used by other quotes for sku {row['sku']!r}")
 
         unit_price = _to_number(row["unit_price"], float, "unit_price", where)
         lead_time = _to_number(row["lead_time_days"], int, "lead_time_days", where)
@@ -145,10 +158,18 @@ def load_suppliers(path: str = QUOTES_CSV, known_skus: List[str] = ()) -> List[D
                 "quotes": [],
             }
             by_id[row["supplier_id"]] = supplier
+        else:
+            # Profile fields are stored once per supplier; a conflicting later
+            # row would otherwise be dropped silently.
+            for field, key in (("supplier_name", "name"), ("region", "region"),
+                               ("product_description", "product_description")):
+                if row[field] != supplier[key]:
+                    raise ValueError(f"{where}: {field} differs from the first row "
+                                     f"for supplier {row['supplier_id']!r}")
         supplier["quotes"].append({
             "sku": row["sku"],
             "unit_price": unit_price,
-            "currency": row["currency"],
+            "currency": currency,
             "lead_time_days": lead_time,
             "payment_terms": row["payment_terms"],
             "moq": moq,

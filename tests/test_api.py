@@ -34,8 +34,9 @@ def fake_agent(monkeypatch):
     """Replace ``agent.compare`` with a recorder that never hits the gateway."""
     calls = []
 
-    def _fake(sku, quotes=None, weights=None):
-        calls.append({"sku": sku, "quotes": quotes, "weights": weights})
+    def _fake(sku, quotes=None, weights=None, quantity=None):
+        calls.append({"sku": sku, "quotes": quotes, "weights": weights,
+                      "quantity": quantity})
         return {"request_id": "req-test", "top": [], "scores": [],
                 "rationale": "stub", "injection_flag": False, "validated": True}
 
@@ -154,7 +155,7 @@ def test_recommend_passes_normalized_weights(client, fake_agent):
     assert body["agent"]["rationale"] == "stub"
     assert body["compare"]["summary"]["winner_supplier_id"] == "SUP-002"
     assert fake_agent == [{"sku": "BRK-100", "quotes": tools.get_quotes("BRK-100"),
-                           "weights": body["compare"]["weights"]}]
+                           "weights": body["compare"]["weights"], "quantity": None}]
 
 
 def test_recommend_passes_only_eligible_quotes(client, fake_agent):
@@ -177,6 +178,27 @@ def test_recommend_injection_flag_covers_excluded_quotes(client, fake_agent):
     assert "SUP-004" not in ranked_ids and "SUP-007" not in ranked_ids
     assert payload["compare"]["injection_suppliers"] == ["SUP-004", "SUP-007"]
     assert payload["agent"]["injection_flag"] is True
+
+
+def test_recommend_passes_quantity_to_agent(client, fake_agent):
+    resp = client.post("/api/recommend", json={"sku": "BRK-100", "quantity": 550})
+    assert resp.status_code == 200
+    assert fake_agent[0]["quantity"] == 550
+
+
+def test_recommend_agent_levers_match_compare_levers(client):
+    # 550 is within 25% of SUP-001's MOQ of 500, so compare adds an MOQ lever.
+    resp = client.post("/api/recommend", json={"sku": "BRK-100", "quantity": 550})
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    compare_levers = payload["compare"]["negotiation_levers"]
+    assert any(lv["dimension"] == "moq" for e in compare_levers for lv in e["levers"])
+    assert payload["agent"]["negotiation_levers"] == compare_levers
+    top = payload["agent"]["recommendation"]["recommended_supplier_id"]
+    top_moq = [lv["text"] for e in compare_levers if e["supplier_id"] == top
+               for lv in e["levers"] if lv["dimension"] == "moq"]
+    for text in top_moq:
+        assert text in payload["agent"]["recommendation"]["negotiation_points"]
 
 def test_recommend_agent_top_matches_compare_ranking(client):
     resp = client.post("/api/recommend",
@@ -249,7 +271,8 @@ def test_index_route_unchanged(client, fake_agent):
     # The legacy form still calls agent.compare(sku) with no weights.
     fake_agent_result = client.post("/", data={"sku": "GSK-200"})
     assert fake_agent_result.status_code == 200
-    assert fake_agent == [{"sku": "GSK-200", "quotes": None, "weights": None}]
+    assert fake_agent == [{"sku": "GSK-200", "quotes": None, "weights": None,
+                           "quantity": None}]
 
 
 # ---- regressions from the Sprint 3 bug hunt ------------------------------- #

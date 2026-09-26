@@ -286,14 +286,19 @@ def _run_agent_loop(system_prompt: str, user_prompt: str, sku: str, quotes: List
 # Deterministic pieces
 # --------------------------------------------------------------------------- #
 
-def _compute_levers(quotes: List[Dict], ranked: List[Dict]) -> List[Dict]:
-    """Code-computed negotiation levers for the Top-N (same logic as compare.py)."""
+def _compute_levers(quotes: List[Dict], ranked: List[Dict],
+                    quantity: Optional[float] = None) -> List[Dict]:
+    """Code-computed negotiation levers for the Top-N (same logic as compare.py).
+
+    ``quantity`` enables the MOQ-headroom lever, exactly as in
+    ``compare.compare_quotes``.
+    """
     if not ranked:
         return []
     by_id = {q["supplier_id"]: q for q in quotes}
     best = _best_in_class(quotes)
     return [{"supplier_id": r["supplier_id"], "supplier": r["supplier"],
-             "levers": _levers_for(by_id[r["supplier_id"]], best, None)}
+             "levers": _levers_for(by_id[r["supplier_id"]], best, quantity)}
             for r in ranked[:TOP_N]]
 
 
@@ -351,13 +356,17 @@ def format_rationale(rec: Dict) -> str:
 # --------------------------------------------------------------------------- #
 
 def compare(sku: str, quotes: Optional[List[Dict]] = None,
-            weights: Optional[Dict[str, float]] = None) -> Dict:
+            weights: Optional[Dict[str, float]] = None,
+            quantity: Optional[float] = None) -> Dict:
     """Compare suppliers for an SKU and return a structured recommendation.
 
     Args:
         sku: The SKU to compare (e.g. "BRK-100").
         quotes: Candidate quotes; if None, loaded from the read-only tool.
         weights: Optional scoring weights, used as given (see scoring.py).
+        quantity: Optional order quantity. It only feeds the MOQ-headroom
+            negotiation lever; filtering by MOQ is the caller's job
+            (``/api/recommend`` passes only eligible quotes).
 
     Returns:
         A dict with ``request_id``, ``top`` (deterministic Top-3), ``scores``,
@@ -365,7 +374,9 @@ def compare(sku: str, quotes: Optional[List[Dict]] = None,
         ``recommendation`` (structured: recommended_supplier_id, rationale,
         negotiation_points, risks; None when there are no quotes),
         ``source`` ("llm" | "fallback" | "offline"), ``injection_details``
-        (supplier_id -> matched snippets), ``tool_calls``, ``usage``, ``errors``.
+        (supplier_id -> matched snippets), ``negotiation_levers`` (Top-3,
+        same shape as ``compare.negotiation_levers``), ``tool_calls``,
+        ``usage``, ``errors``.
         ``validated`` is False only when the LLM ran but its answer was
         rejected or the gateway failed, and the fallback was shown instead.
     """
@@ -383,7 +394,7 @@ def compare(sku: str, quotes: Optional[List[Dict]] = None,
     # Step 2: deterministic scoring + levers.
     ranked = score_suppliers(quotes, weights)
     top = ranked[:TOP_N]
-    levers = _compute_levers(quotes, ranked)
+    levers = _compute_levers(quotes, ranked, quantity)
 
     # Steps 3-4: LLM narration with validation, else deterministic fallback.
     trace: Dict = {"tool_calls": [], "errors": [],
@@ -410,6 +421,7 @@ def compare(sku: str, quotes: Optional[List[Dict]] = None,
     log_decision({
         "request_id": request_id,
         "inputs": {"sku": sku, "num_quotes": len(quotes), "weights": weights,
+                   "quantity": quantity,
                    "supplier_ids": [q.get("supplier_id") for q in quotes]},
         "tool_calls": trace["tool_calls"],
         "scores": {r["supplier_id"]: r["score"] for r in ranked},
@@ -433,6 +445,7 @@ def compare(sku: str, quotes: Optional[List[Dict]] = None,
         "recommendation": recommendation,
         "source": source,
         "injection_details": flagged,
+        "negotiation_levers": levers,
         "tool_calls": trace["tool_calls"],
         "usage": trace["usage"],
         "errors": trace["errors"],
@@ -447,6 +460,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the supplier-comparison agent for one SKU.")
     parser.add_argument("sku")
     parser.add_argument("--weights", help="partial overrides, e.g. price=0.6,lead_time=0.4")
+    parser.add_argument("--quantity", type=float, help="order quantity (enables the MOQ lever)")
     parser.add_argument("--json", action="store_true", help="print the full result as JSON")
     cli = parser.parse_args()
 
@@ -454,7 +468,7 @@ if __name__ == "__main__":
     if cli.weights:
         overrides = {k.strip(): float(v) for k, _, v in
                      (part.partition("=") for part in cli.weights.split(","))}
-    out = compare(cli.sku, weights=normalize_weights(overrides))
+    out = compare(cli.sku, weights=normalize_weights(overrides), quantity=cli.quantity)
     if cli.json:
         print(json.dumps(out, indent=2, ensure_ascii=False))
     else:

@@ -169,7 +169,8 @@ def api_recommend():
         # An empty list is passed through as is: agent.compare only reloads
         # quotes when the argument is None.
         agent_result = agent.compare(kwargs["sku"], quotes=eligible,
-                                     weights=result["weights"])
+                                     weights=result["weights"],
+                                     quantity=kwargs["quantity"])
     except Exception as exc:  # noqa: BLE001 - never leak a stack trace
         app.logger.exception("agent.compare failed for %s", kwargs["sku"])
         return _error(f"agent narration failed ({type(exc).__name__})", 502,

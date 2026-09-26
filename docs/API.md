@@ -165,7 +165,7 @@ Notes for consumers:
 
 Takes the same body as `/api/compare`. The server first runs `compare_quotes`,
 so any validation error returns 400 or 404 before the LLM is called. It then
-calls `agent.compare(sku, quotes=<eligible quotes>, weights=<compare.weights>)`,
+calls `agent.compare(sku, quotes=<eligible quotes>, weights=<compare.weights>, quantity=<quantity>)`,
 where the eligible quotes are the ones in `compare.ranked`.
 
 ```bash
@@ -228,7 +228,11 @@ curl -s -X POST localhost:8080/api/recommend -H 'Content-Type: application/json'
   agent. The response still includes the numbers:
   `{"error": "agent narration failed (RuntimeError)", "compare": {...}}`.
 
-## Python API: `agent.compare(sku, quotes=None, weights=None)`
+## Python API: `agent.compare(sku, quotes=None, weights=None, quantity=None)`
+
+`quantity` is optional and only feeds the MOQ-headroom negotiation lever, so
+`agent.negotiation_levers` (and the levers shown to the LLM) match
+`compare.negotiation_levers` for the same request. It does not filter quotes.
 
 The signature and the `weights=None` behaviour are unchanged. `weights` passed
 to `agent.compare` (and `scoring.score_suppliers`) is used **as given**, as

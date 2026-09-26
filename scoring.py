@@ -27,6 +27,31 @@ DIMENSIONS: Tuple[str, ...] = tuple(DEFAULT_WEIGHTS)
 _NET_DAYS_RE = re.compile(r"net\s*(\d+)", re.IGNORECASE)
 
 
+def is_finite_number(value) -> bool:
+    """Return True if ``value`` is a real number that fits a finite float.
+
+    ``math.isfinite`` raises ``OverflowError`` for ints too large for a float
+    (JSON such as ``1`` followed by 400 zeros parses to one); those count as
+    not finite here, so callers can reject them with a ``ValueError``.
+    """
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def short_repr(value) -> str:
+    """Bounded ``repr`` for error messages.
+
+    Ints too large for a float are not spelled out (``repr`` of one can have
+    hundreds of digits, or raise above Python's int-to-str digit limit).
+    """
+    if isinstance(value, int) and not is_finite_number(value):
+        return "<integer too large>"
+    text = repr(value)
+    return text if len(text) <= 40 else text[:37] + "..."
+
+
 def normalize_weights(weights: Optional[Mapping[str, float]] = None) -> Dict[str, float]:
     """Validate weight overrides and renormalize them to sum to 1.0.
 
@@ -52,9 +77,9 @@ def normalize_weights(weights: Optional[Mapping[str, float]] = None) -> Dict[str
                 f"unknown weight dimension {dim!r}; expected one of {list(DIMENSIONS)}"
             )
         if isinstance(value, bool) or not isinstance(value, numbers.Real):
-            raise ValueError(f"weight for {dim!r} must be a number, got {value!r}")
-        if not math.isfinite(value):
-            raise ValueError(f"weight for {dim!r} must be finite, got {value!r}")
+            raise ValueError(f"weight for {dim!r} must be a number, got {short_repr(value)}")
+        if not is_finite_number(value):
+            raise ValueError(f"weight for {dim!r} must be finite, got {short_repr(value)}")
         if value < 0:
             raise ValueError(f"weight for {dim!r} must be >= 0, got {value}")
         merged[dim] = float(value)
@@ -122,8 +147,8 @@ def score_suppliers(quotes: List[Dict],
     """
     weights = weights or DEFAULT_WEIGHTS
     for dim, value in weights.items():
-        if not math.isfinite(value):
-            raise ValueError(f"weight for {dim!r} must be finite, got {value!r}")
+        if not is_finite_number(value):
+            raise ValueError(f"weight for {dim!r} must be finite, got {short_repr(value)}")
     if not quotes:
         return []
 

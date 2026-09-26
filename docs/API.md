@@ -30,7 +30,7 @@ Every `/api/*` error uses the same shape. No stack traces are returned.
 
 | Status | When |
 |---|---|
-| 400 | Body is not a JSON object; `sku` is missing or empty; `weights` is not an object; an unknown weight dimension; a negative or non-finite (`Infinity`, `NaN`, `1e400`) weight, weights whose sum overflows, or all weights zero; `quantity` / `max_lead_time_days` is not a finite positive number; `?sku=` is missing |
+| 400 | Body is not a JSON object; `sku` is missing or empty; `weights` is not an object; an unknown weight dimension; a negative or non-finite (`Infinity`, `NaN`, `1e400`) weight, weights whose sum overflows, or all weights zero; `quantity` / `max_lead_time_days` is not a finite positive number (an integer too large for a float, such as `1` followed by 400 zeros, counts as non-finite); `?sku=` is missing |
 | 404 | Unknown SKU, or an unknown `/api/...` path |
 | 405 | Wrong method, e.g. `GET /api/compare` |
 | 500 | Unexpected server error (generic message; the details go to the server log) |
@@ -138,7 +138,7 @@ curl -s -X POST localhost:8080/api/compare -H 'Content-Type: application/json' \
        "text": "Order quantity 600 is only 100 units above MOQ 500 — ask for a lower MOQ to keep flexibility"}]},
     ...
   ],
-  "injection_suppliers": ["SUP-004"],
+  "injection_suppliers": ["SUP-004", "SUP-007"],
   "summary": {"num_quotes": 8, "num_eligible": 2, "winner_supplier_id": "SUP-001"}
 }
 ```
@@ -150,6 +150,8 @@ Notes for consumers:
 - `negotiation_levers` covers the Top 3 of `ranked`. The `text` is ready to
   display, and `gap` / `unit` / `benchmark_supplier_id` let the UI render it
   in its own way.
+  `gap` is always > 0, except for the `moq` lever, where it is the headroom
+  `quantity - MOQ` and is 0 when the order is exactly at the MOQ.
 - `injection_suppliers` covers **all** quotes, including excluded ones.
   `ranked[i].injection_flag` is true when that supplier is in the list. The
   detector has English and Chinese patterns, so both SUP-004 and SUP-007 are
@@ -208,7 +210,10 @@ curl -s -X POST localhost:8080/api/recommend -H 'Content-Type: application/json'
     was rejected twice; the same template is shown and `agent.errors` says why.
     `validated` is `false` only in this case.
 - `agent.injection_details` maps each flagged `supplier_id` to the matched
-  snippets. Flagged descriptions are redacted before anything is sent to the LLM.
+  snippets. Its keys are exactly `compare.injection_suppliers`: `/api/recommend`
+  adds the snippets of flagged quotes that the constraints excluded (the agent
+  never sees those). Flagged descriptions are redacted before anything is sent
+  to the LLM.
 - The recommended supplier is always `agent.top[0]`: the LLM explains the
   ranking but cannot change it.
 - The agent only sees the quotes that pass `quantity` / `max_lead_time_days`,

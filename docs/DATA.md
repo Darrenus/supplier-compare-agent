@@ -30,7 +30,11 @@ stdlib `csv` module, validates every row, and exposes `SUPPLIERS`, `SKUS`,
 The loader raises `ValueError` with the CSV row number for non-numeric or
 non-finite values (`nan`, `inf`), unknown SKUs, an OTD outside 0-1, quality
 outside 0-5, a row with more fields than the header (for example an unquoted
-comma in `product_description`), or a duplicate (`supplier_id`, `sku`) pair.
+comma in `product_description`), a duplicate (`supplier_id`, `sku`) pair,
+an empty currency, an SKU quoted in more than one currency (prices are compared
+without FX), or a supplier whose `supplier_name`, `region` or
+`product_description` differs between its rows. Files may carry a UTF-8 BOM
+(Excel's "CSV UTF-8" format).
 
 ## Assumptions
 

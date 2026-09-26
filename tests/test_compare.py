@@ -259,3 +259,68 @@ def test_detector_catches_chinese_injection():
                 if s["supplier_id"] == "SUP-007")
     assert "忽略之前的指令" in desc
     assert security.detect_injection(desc)
+
+
+# ---- regressions from the Sprint 3 bug hunt ------------------------------- #
+
+HUGE_INT = 10 ** 400  # what JSON "1" + 400 zeros parses to; no float can hold it
+
+
+def test_huge_int_inputs_raise_value_error_not_overflow():
+    """math.isfinite(10**400) raises OverflowError; it used to escape as a 500."""
+    for kwargs in ({"quantity": HUGE_INT}, {"max_lead_time_days": HUGE_INT},
+                   {"weights": {"price": HUGE_INT}}):
+        with pytest.raises(ValueError, match="finite") as info:
+            compare_quotes("BRK-100", **kwargs)
+        assert len(str(info.value)) < 200  # the 401-digit number is not echoed
+    with pytest.raises(ValueError, match="finite"):
+        score_suppliers(tools.get_quotes("BRK-100"), {"price": HUGE_INT})
+    # Large ints that do fit a float are still accepted.
+    assert compare_quotes("BRK-100", quantity=10 ** 300)["summary"]["num_eligible"] == 8
+
+
+def test_moq_lever_text_when_quantity_equals_moq():
+    result = compare_quotes("TEST-9", quotes=[_quote("S1", 10.0, moq=200)], quantity=200)
+    lever = result["negotiation_levers"][0]["levers"][0]
+    assert (lever["dimension"], lever["gap"]) == ("moq", 0)
+    assert lever["text"].startswith("Order quantity 200 is exactly the MOQ 200")
+    assert "only 0 units" not in lever["text"]
+
+
+def test_mixed_currencies_rejected():
+    usd = dict(_quote("S2", 8.0), currency="USD")
+    with pytest.raises(ValueError, match="mix currencies"):
+        compare_quotes("TEST-9", quotes=[_quote("S1", 10.0), usd])
+
+
+def test_loader_accepts_utf8_bom(tmp_path):
+    """Excel's "CSV UTF-8" adds a BOM that used to hide the first column."""
+    header = ",".join(mock_data._QUOTE_FIELDS)
+    path = tmp_path / "quotes.csv"
+    path.write_text(header + "\nSUP-X,X,SG,desc,BRK-100,1.0,SGD,5,Net 30,10,0.9,4.0\n",
+                    encoding="utf-8-sig")
+    suppliers = mock_data.load_suppliers(str(path), known_skus=["BRK-100"])
+    assert suppliers[0]["supplier_id"] == "SUP-X"
+    products = tmp_path / "products.csv"
+    products.write_text("sku,name,category,unit\nBRK-100,Bracket,Metal,pcs\n",
+                        encoding="utf-8-sig")
+    assert mock_data.load_products(str(products))[0]["sku"] == "BRK-100"
+
+
+def test_loader_rejects_mixed_currency_and_inconsistent_supplier(tmp_path):
+    header = ",".join(mock_data._QUOTE_FIELDS)
+    first = "SUP-X,X,SG,desc,BRK-100,1.0,SGD,5,Net 30,10,0.9,4.0\n"
+    path = tmp_path / "quotes.csv"
+    path.write_text(header + "\n" + first
+                    + "SUP-Y,Y,SG,desc,BRK-100,1.0,USD,5,Net 30,10,0.9,4.0\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="row 3: currency 'USD' differs"):
+        mock_data.load_suppliers(str(path), known_skus=["BRK-100"])
+    path.write_text(header + "\n" + first
+                    + "SUP-X,Other Name,SG,desc,GSK-200,1.0,SGD,5,Net 30,10,0.9,4.0\n",
+                    encoding="utf-8")
+    with pytest.raises(ValueError, match="row 3: supplier_name differs"):
+        mock_data.load_suppliers(str(path), known_skus=["BRK-100", "GSK-200"])
+    path.write_text(header + "\nSUP-X,X,SG,desc,BRK-100,1.0,,5,Net 30,10,0.9,4.0\n",
+                    encoding="utf-8")
+    with pytest.raises(ValueError, match="row 2: empty currency"):
+        mock_data.load_suppliers(str(path), known_skus=["BRK-100"])

@@ -25,6 +25,7 @@ from werkzeug.exceptions import HTTPException
 
 import agent
 import gateway_client
+import security
 import tools
 from compare import UnknownSkuError, compare_quotes
 from mock_data import PRODUCTS, PRODUCTS_BY_SKU, SKUS
@@ -173,10 +174,18 @@ def api_recommend():
         app.logger.exception("agent.compare failed for %s", kwargs["sku"])
         return _error(f"agent narration failed ({type(exc).__name__})", 502,
                       compare=result)
-    # The agent only scans eligible quotes; also flag injections from excluded
-    # ones so agent.injection_flag agrees with compare.injection_suppliers.
+    # The agent only scans eligible quotes; also report injections from
+    # excluded ones, so agent.injection_flag agrees with
+    # compare.injection_suppliers and the page can show every matched snippet.
     agent_result["injection_flag"] = (bool(agent_result.get("injection_flag"))
                                       or bool(result["injection_suppliers"]))
+    details = dict(agent_result.get("injection_details") or {})
+    descriptions = {q.get("supplier_id"): q.get("product_description", "")
+                    for q in tools.get_quotes(kwargs["sku"])}
+    for sid in result["injection_suppliers"]:
+        if sid not in details:
+            details[sid] = security.find_injections(descriptions.get(sid, ""))
+    agent_result["injection_details"] = details
     return jsonify({"compare": result, "agent": agent_result})
 
 

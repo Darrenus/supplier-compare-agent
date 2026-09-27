@@ -121,6 +121,16 @@ injection 3/3.
 python eval/live_eval.py
 ```
 
+Scale evaluation on synthetic pools of 5 to 200 suppliers (offline and free;
+`--live` adds one 50-supplier run through the real LLM). It checks the ranking
+against an independent re-implementation of the formula, that supplier text never
+moves a score, that injections are flagged, and that the agent's request fits the
+gateway. Report: [`eval/results/scale_eval.md`](eval/results/scale_eval.md).
+
+```bash
+python eval/scale_eval.py [--live]
+```
+
 Unit tests:
 
 ```bash

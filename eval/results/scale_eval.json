@@ -1,0 +1,98 @@
+{
+  "run_at": "2026-09-27 06:08 UTC",
+  "sizes": [
+    {
+      "suppliers": 5,
+      "pools": 10,
+      "compare_ms_median": 0.08,
+      "first_request_bytes_max": 4600,
+      "correct": 10,
+      "text_blind": 10,
+      "order_free": 10,
+      "injections_flagged": 10,
+      "fits_gateway": 10,
+      "planted_injectors": 0,
+      "injector_won": 0
+    },
+    {
+      "suppliers": 10,
+      "pools": 10,
+      "compare_ms_median": 0.14,
+      "first_request_bytes_max": 5588,
+      "correct": 10,
+      "text_blind": 10,
+      "order_free": 10,
+      "injections_flagged": 10,
+      "fits_gateway": 10,
+      "planted_injectors": 10,
+      "injector_won": 1
+    },
+    {
+      "suppliers": 20,
+      "pools": 10,
+      "compare_ms_median": 0.26,
+      "first_request_bytes_max": 5624,
+      "correct": 10,
+      "text_blind": 10,
+      "order_free": 10,
+      "injections_flagged": 10,
+      "fits_gateway": 10,
+      "planted_injectors": 20,
+      "injector_won": 1
+    },
+    {
+      "suppliers": 50,
+      "pools": 10,
+      "compare_ms_median": 0.56,
+      "first_request_bytes_max": 5668,
+      "correct": 10,
+      "text_blind": 10,
+      "order_free": 10,
+      "injections_flagged": 10,
+      "fits_gateway": 10,
+      "planted_injectors": 50,
+      "injector_won": 0
+    },
+    {
+      "suppliers": 100,
+      "pools": 10,
+      "compare_ms_median": 1.09,
+      "first_request_bytes_max": 5696,
+      "correct": 10,
+      "text_blind": 10,
+      "order_free": 10,
+      "injections_flagged": 10,
+      "fits_gateway": 10,
+      "planted_injectors": 100,
+      "injector_won": 0
+    },
+    {
+      "suppliers": 200,
+      "pools": 10,
+      "compare_ms_median": 2.16,
+      "first_request_bytes_max": 5645,
+      "correct": 10,
+      "text_blind": 10,
+      "order_free": 10,
+      "injections_flagged": 10,
+      "fits_gateway": 10,
+      "planted_injectors": 200,
+      "injector_won": 2
+    }
+  ],
+  "live": {
+    "suppliers": 50,
+    "seed": 0,
+    "source": "llm",
+    "validated": true,
+    "recommended": "SUP-024",
+    "expected": "SUP-024",
+    "llm_calls": 2,
+    "tokens": 20819,
+    "seconds": 60.7,
+    "errors": [
+      "invalid answer: uses numbers that are not in the data you were given: ['8.1']. Copy figures exactly from the ranking and levers; do not compute new ones"
+    ],
+    "passed": true
+  }
+}

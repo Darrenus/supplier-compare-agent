@@ -271,6 +271,32 @@ curl -s -X POST localhost:8080/api/decisions -H 'Content-Type: application/json'
 A file lock around the check and the append makes "one decision per request"
 hold across gunicorn workers.
 
+## GET /api/decisions/<request_id>
+
+Read-only audit record for one request: the agent's decision-log record and
+the buyer's decision (`null` until one is recorded). The JSON is
+pretty-printed so it reads well in a browser; on the page, the request id
+under each recommendation links here.
+
+```bash
+curl -s localhost:8080/api/decisions/req-c331c9b3
+```
+```json
+{
+  "request_id": "req-c331c9b3",
+  "agent": {"timestamp": "...", "request_id": "req-c331c9b3",
+            "inputs": {"sku": "GSK-200", "num_quotes": 5, "weights": {...}, "quantity": null, ...},
+            "tool_calls": [], "scores": {"SUP-001": 0.675, ...}, "decision": ["SUP-001", ...],
+            "recommended_supplier_id": "SUP-001", "rationale": "...", "injection_flag": false,
+            "source": "llm", "usage": {...}, "errors": []},
+  "human_decision": {"type": "human_decision", "action": "override", "supplier_id": "SUP-006",
+                     "agrees_with_agent": false, "reason": "...", "order_placed": false, ...}
+}
+```
+
+`request_id` must be `req-` plus 8 lowercase hex characters (400 otherwise);
+an id that was never logged is 404.
+
 ## Python API: `agent.compare(sku, quotes=None, weights=None, quantity=None)`
 
 `quantity` is optional and only feeds the MOQ-headroom negotiation lever, so

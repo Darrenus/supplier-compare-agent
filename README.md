@@ -9,6 +9,23 @@ hackathon by team **Show Me Your Token** (Public track, Team Code `DAG1YLPM`).
 The agent **recommends only — it never places orders** (human-in-the-loop stays
 in control).
 
+**Live demo:** <http://56.10.70.203> · **Write-up:** [`docs/WRITEUP.md`](docs/WRITEUP.md)
+
+## Screenshots
+
+The recommendation: code picks the supplier, Claude writes the explanation and
+negotiation points, and the buyer approves or overrides it.
+
+![Recommendation with negotiation opportunities and the buyer's decision](docs/screenshots/recommendation.png)
+
+| Ranking first, AI explanation loading | Why this supplier? + injection flags |
+|---|---|
+| ![The code-computed ranking renders at once while the AI recommendation loads](docs/screenshots/ranking-first.png) | ![Per-dimension score breakdown and two suppliers flagged for prompt injection](docs/screenshots/ranking-why-injection.png) |
+| **Decision recorded in the audit log** | **Dark theme** |
+| ![Approved decision, logged with its request id; no order placed](docs/screenshots/decision-recorded.png) | ![Dark theme with the AI-generated explanation expanded](docs/screenshots/dark-theme.png) |
+
+Captured from the app with the real LLM gateway (BRK-100, default weights).
+
 ## Architecture
 
 ```
@@ -60,7 +77,8 @@ Agent from the command line: `python agent.py BRK-100 [--weights price=0.6] [--j
   as instructions; `detect_injection()` flags known attacks; tools are
   read-only (`tools.py`); the model's output is validated against the input set.
 - **#6 Observability / eval** — every decision is logged as a JSON line in
-  `decisions.jsonl`; `eval/` holds golden and adversarial cases with a runner.
+  `decisions.jsonl`, and `GET /api/decisions/<request_id>` (linked from the request
+  id on the page) shows a request's full audit record, agent and buyer decision; `eval/` holds golden and adversarial cases with a runner.
 
 ## Setup
 
@@ -89,6 +107,18 @@ Evaluation (golden + adversarial cases):
 
 ```bash
 python eval/run_eval.py
+```
+
+Live-LLM evaluation (needs the gateway key; about 14 LLM calls). It runs every case
+through the real agent, checks that no flagged text reaches the model, and repeats
+the adversarial cases with the injection detector switched off to test the model
+and output validation on their own. The latest report is in
+[`eval/results/live_eval.md`](eval/results/live_eval.md): 8/8 defended cases
+passed, and with the detector bypassed the model's first answer resisted the raw
+injection 3/3.
+
+```bash
+python eval/live_eval.py
 ```
 
 Unit tests:

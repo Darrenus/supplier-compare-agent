@@ -14,12 +14,16 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 # Log file lives beside this module (and is gitignored).
 LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "decisions.jsonl")
+
+
+REQUEST_ID_RE = re.compile(r"^req-[0-9a-f]{8}$")
 
 
 def new_request_id() -> str:
@@ -140,3 +144,18 @@ def record_human_decision(request_id: str, action: str, supplier_id: str,
             return record
         finally:
             fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def audit_record(request_id: str) -> Optional[Dict]:
+    """The full audit trail for one request, or None if it was never logged.
+
+    Returns ``{"request_id", "agent", "human_decision"}``: the agent's record
+    (inputs, scores, tool calls, rationale, usage, errors) and the buyer's
+    decision, or None while it is undecided.
+    """
+    records = read_records(request_id)
+    agent_rec = next((r for r in records if r.get("type") != HUMAN_DECISION), None)
+    if agent_rec is None:
+        return None
+    human = next((r for r in records if r.get("type") == HUMAN_DECISION), None)
+    return {"request_id": request_id, "agent": agent_rec, "human_decision": human}

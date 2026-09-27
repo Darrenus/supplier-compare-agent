@@ -13,6 +13,8 @@ JSON API (contract in ``docs/API.md``):
     GET  /api/quotes     raw quotes for one SKU (``?sku=``)
     POST /api/compare    deterministic comparison (``compare.compare_quotes``)
     POST /api/recommend  comparison + LLM narration (``agent.compare``)
+    POST /api/decisions  the buyer approves or overrides a recommendation
+                         (appended to the decision log; nothing is ordered)
 Every ``/api/*`` error is ``{"error": "<message>"}`` with a 4xx/5xx status; no
 stack traces are returned.
 """
@@ -25,6 +27,7 @@ from werkzeug.exceptions import HTTPException
 
 import agent
 import gateway_client
+import observability
 import security
 import tools
 from compare import UnknownSkuError, compare_quotes
@@ -188,6 +191,32 @@ def api_recommend():
             details[sid] = security.find_injections(descriptions.get(sid, ""))
     agent_result["injection_details"] = details
     return jsonify({"compare": result, "agent": agent_result})
+
+
+@app.post("/api/decisions")
+def api_decisions():
+    """Record the human buyer's decision on a logged recommendation (Rubric #4).
+
+    Body: ``{"request_id", "action": "approve"|"override", "supplier_id",
+    "reason"?}``. The decision is appended to ``decisions.jsonl`` next to the
+    agent's record with the same ``request_id``. No order is placed.
+    """
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return _error("request body must be a JSON object", 400)
+    fields = {k: body.get(k) for k in ("request_id", "action", "supplier_id", "reason")}
+    for key in ("request_id", "action", "supplier_id"):
+        if not isinstance(fields[key], str) or not fields[key].strip():
+            return _error(f"'{key}' is required and must be a non-empty string", 400)
+    if fields["reason"] is not None and not isinstance(fields["reason"], str):
+        return _error("'reason' must be a string", 400)
+    try:
+        record = observability.record_human_decision(
+            fields["request_id"].strip(), fields["action"].strip(),
+            fields["supplier_id"].strip(), fields["reason"])
+    except observability.DecisionError as exc:
+        return _error(str(exc), exc.status)
+    return jsonify({"decision": record}), 201
 
 
 @app.errorhandler(HTTPException)

@@ -49,7 +49,10 @@ Agent from the command line: `python agent.py BRK-100 [--weights price=0.6] [--j
 ## Guardrails & observability (judging rubric)
 
 - **#4 Human-in-the-loop** — the agent only recommends; there are no
-  order-placing or side-effecting tools.
+  order-placing or side-effecting tools. Under each recommendation the buyer
+  **approves** it or **overrides** it with another supplier and a reason
+  (`POST /api/decisions`); the decision is appended to `decisions.jsonl` next to
+  the agent's record, once per request, and no order is placed.
 - **#5 Security** — untrusted supplier text is wrapped in
   `<supplier_data>...</supplier_data>` and the system prompt forbids treating it
   as instructions; `detect_injection()` flags known attacks; tools are

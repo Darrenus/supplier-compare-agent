@@ -50,6 +50,14 @@
                border: 2px solid var(--muted); border-top-color: var(--accent); border-radius: 50%;
                animation: spin 0.9s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
+    /* human decision (HITL) */
+    .decision { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+    .decision .row { gap: 10px; margin-top: 8px; align-items: center; }
+    .decision button.secondary { background: transparent; color: var(--text); border: 1px solid var(--line); }
+    .decision textarea { font: inherit; width: 100%; min-height: 56px; padding: 8px 10px; border-radius: 8px;
+                         border: 1px solid var(--line); background: var(--card2); color: var(--text); }
+    .decision .done { color: var(--ok); font-weight: 600; }
+    .decision .err { color: var(--bad); }
     .badge { display: inline-block; font-size: 0.75rem; font-weight: 600; padding: 2px 8px; border-radius: 999px; margin-left: 8px; vertical-align: middle; }
     .badge.llm { background: #164e63; color: #a5f3fc; }
     .badge.offline { background: #334155; color: #cbd5e1; }
@@ -280,6 +288,61 @@
     return panel;
   }
 
+  // Human-in-the-loop: the buyer approves the recommendation or overrides it.
+  // The decision is appended to the audit log next to the agent's record;
+  // nothing is ordered.
+  function renderDecision(agent, ranked) {
+    const rec = agent.recommendation;
+    const box = el("div", { class: "decision" });
+    const msg = el("div", { class: "small" });
+    const note = el("div", { class: "muted small" },
+      "Your decision is recorded in the audit log with request ", agent.request_id,
+      ". The agent never places orders.");
+
+    async function send(payload, busy) {
+      busy.forEach(b => { b.disabled = true; });
+      msg.className = "small"; msg.textContent = "Recording…";
+      try {
+        const r = await fetch("/api/decisions", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ request_id: agent.request_id, ...payload }) });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+        const d = data.decision;
+        const who = (ranked.find(x => x.supplier_id === d.supplier_id) || {}).supplier || d.supplier_id;
+        const when = new Date(d.timestamp).toLocaleTimeString();
+        box.replaceChildren(...[el("div", { class: "done" },
+          d.action === "approve" ? `✓ Approved: ${who}` : `✓ Override recorded: ${who} instead of ${rec.recommended_supplier}`),
+          d.reason ? el("div", { class: "small" }, "Reason: ", d.reason) : null,
+          el("div", { class: "muted small" }, `Logged at ${when} with request ${d.request_id}. No order was placed.`)]
+          .filter(Boolean));
+      } catch (err) {
+        msg.className = "small err"; msg.textContent = "Not recorded: " + err.message;
+        busy.forEach(b => { b.disabled = false; });
+      }
+    }
+
+    const approve = el("button", { type: "button" }, `Approve ${rec.recommended_supplier}`);
+    const other = el("button", { type: "button", class: "secondary" }, "Choose a different supplier…");
+    const pick = el("select", {}, ranked.filter(r => r.supplier_id !== rec.recommended_supplier_id)
+      .map(r => el("option", { value: r.supplier_id }, `${r.supplier} (${r.supplier_id}) · score ${r.score.toFixed(3)}`)));
+    const reason = el("textarea", { maxLength: 500, placeholder: "Why? (required, e.g. existing framework contract, audit finding)" });
+    const confirm = el("button", { type: "button" }, "Record override");
+    const overrideForm = el("div", { class: "hidden" },
+      el("div", { class: "row" }, pick), el("div", { class: "row" }, reason), el("div", { class: "row" }, confirm));
+
+    approve.addEventListener("click", () => send({ action: "approve", supplier_id: rec.recommended_supplier_id }, [approve, other]));
+    other.addEventListener("click", () => { overrideForm.classList.toggle("hidden"); reason.focus(); });
+    reason.addEventListener("input", () => { if (msg.classList.contains("err")) msg.textContent = ""; });
+    confirm.addEventListener("click", () => {
+      if (reason.value.trim().length < 5) { msg.className = "small err"; msg.textContent = "Please give a reason (at least 5 characters)."; return; }
+      send({ action: "override", supplier_id: pick.value, reason: reason.value }, [approve, other, confirm]);
+    });
+
+    box.append(el("h2", {}, "Your decision"), note,
+      el("div", { class: "row" }, approve, ranked.length > 1 ? other : null), overrideForm, msg);
+    return box;
+  }
+
   function renderAgentFailure(message) {
     return el("div", { class: "panel rec failed" },
       el("div", { class: "muted small" }, "Recommendation"),
@@ -345,6 +408,7 @@
       if (rec.data.agent) {
         fill(s.inj, renderInjection(compare, rec.data.agent));   // now with the matched snippets
         fill(s.rec, renderRecommendation(rec.data.agent));
+        if (rec.data.agent.recommendation) s.rec.firstChild.append(renderDecision(rec.data.agent, compare.ranked));
       } else if (compare.ranked.length) {
         const why = rec.status === 429
           ? "Too many recommendation requests from this address. Wait a minute and press Compare again."

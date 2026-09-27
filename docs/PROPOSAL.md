@@ -1,7 +1,7 @@
 # Supplier Comparison Agent: Business Proposal
 
 Team **Show Me Your Token** (DAG1YLPM) · NUS-ISS "Show Me Your Agents" hackathon, Public track · Problem: *Supplier Comparison*<br>
-Live demo: <http://56.10.70.203> · Code: <https://github.com/Darrenus/supplier-compare-agent> · System design: `docs/WRITEUP.md`
+Live demo: <http://56.10.70.203> · Code: <https://github.com/Darrenus/supplier-compare-agent> · Technical document: `docs/Supplier_Comparison_Agent_Writeup.pdf`
 
 ---
 
@@ -89,13 +89,15 @@ acceptable lead time. Then:
 | 2. Score | Code | Each dimension is normalised across the remaining quotes, weighted and summed. The ranking can be recomputed by hand |
 | 3. Benchmark | Code | Best-in-class per dimension; the gaps become negotiation levers ("a 12.8% cut to match Meridian's SGD 10.90") |
 | 4. Scan | Code | Every supplier description is checked for hidden instructions (English and Chinese); flagged text is redacted before the model sees it |
-| 5. Decide | Agent (Claude) | Reads the quotes through read-only tools, weighs the trade-offs, recommends a supplier, and writes the rationale, negotiation points and risks. It may disagree with the computed #1, but must say so |
+| 5. Decide | Agent (Claude) | Reads the quotes, the computed ranking and the levers (with read-only tools available if it needs more detail), weighs the trade-offs, recommends a supplier, and writes the rationale, negotiation points and risks. It may disagree with the computed #1, but must say so |
 | 6. Validate | Code | The answer is rejected unless the supplier was compared and not flagged, and every number appears in the data. One repair attempt, then a rule-based fallback |
 | 7. Approve | Buyer | Approves, or chooses another supplier with a reason. Both are logged. **No order is placed** |
 
-The screen shows the agent's work while it happens (an activity trace of each step), labels AI text
-as *"AI-generated explanation"* or *"rule-based explanation"*, and links every recommendation to its
-full audit record.
+While the agent works, the screen shows an activity trace of its steps: the quotes loaded through
+the read-only data tool, the security scan, each LLM call and the output check. Short progress notes
+between those steps are generic placeholders, not the model's reasoning; the model's reasoning is the
+written rationale in the result. AI text is labelled *"AI-generated explanation"* or *"rule-based
+explanation"*, and every recommendation links to its full audit record.
 
 ---
 
@@ -108,7 +110,7 @@ full audit record.
 | **Working capital** | Payment terms are scored, and a lever such as "Net 30 vs Net 60 at Meridian" prompts the buyer to ask for 30 more days, which is cash the SME keeps longer |
 | **Service** | Delivery reliability and lead time are weighted explicitly, so the cheapest-but-late supplier does not win by accident; fewer line stoppages downstream |
 | **Risk and control** | Same inputs, same ranking. Every decision is logged with its inputs, scores, AI rationale and the human's approval or override. Manipulative supplier text is flagged, redacted and cannot move a score |
-| **Scale** | Scoring 200 suppliers takes about 2 ms. Adding products or suppliers means adding rows to a file, not adding headcount |
+| **Scale** | Scoring 200 suppliers takes a few milliseconds. Adding products or suppliers means adding rows to a file, not adding headcount |
 
 ---
 
@@ -131,7 +133,8 @@ Section 5 is how they would be measured.
 
 The two quality KPIs are already measurable in our prototype: all 7 golden and adversarial
 evaluation cases pass, and in live runs against Claude all validated answers recommended a
-compared, non-flagged supplier. The cost and time KPIs need real quotations; they are the purpose of
+compared, non-flagged supplier. Even with the injection detector switched off entirely, Claude
+never recommended an injecting supplier (3/3 adversarial cases). The cost and time KPIs need real quotations; they are the purpose of
 the pilot.
 
 ---
@@ -163,13 +166,13 @@ conservatively and leave it to the buyer.
 |---|---|
 | The AI invents a number or a supplier | Validation rejects any supplier that was not compared and any number not present in the data; one repair, then the rule-based fallback. The badge tells the buyer which one they are reading |
 | A supplier manipulates the AI through its quotation | Bilingual detection, redaction before the model, `<supplier_data>` isolation, and the flagged supplier can never be recommended. Most importantly, descriptions are never scored: in our scale test the ranking was identical with every description replaced (60/60 pools) |
-| The model is unavailable or slow | Rule-based recommendation from the same numbers; the ranking appears first (about 0.1 s) and the AI text fills in |
+| The model is unavailable or slow | Rule-based recommendation from the same numbers; if the live agent stream fails, the page falls back to the computed ranking |
 | Cost runaway on a public site | Per-IP and site-wide rate limits on the AI endpoint |
 | Wrong decision is made | A human approves every decision, and every decision is logged and traceable |
 
 ### Scalability
 
-- **More suppliers and products.** Scoring is linear: 0.08 ms for 5 suppliers, 2.2 ms for 200. The prompt is capped at the top 8 suppliers in detail, so a 200-supplier request still fits the gateway. A live 50-supplier run returned a validated AI recommendation.
+- **More suppliers and products.** Scoring is linear: well under 1 ms for 5 suppliers and a few milliseconds for 200 (0.1–0.2 ms and 2–4 ms on our test machine). The prompt is capped at the top 8 suppliers in detail, so a 200-supplier request still fits the gateway. A live 50-supplier run returned a validated AI recommendation.
 - **More users and departments.** The same engine serves any category that is bought on price, delivery, terms and performance: raw materials, packaging, IT hardware, facilities services. Each department sets its own default weights.
 - **Monitoring, security and governance.** One audit record per decision (inputs, scores, tool calls, AI text, token usage, source, the human decision), a health endpoint, over 120 automated tests and CI on every change, and a live-site check script.
 
@@ -190,7 +193,7 @@ conservatively and leave it to the buyer.
 | Scores are transparent and reproducible | Segment 1: the five weighted contributions are added up on screen to 0.700 | #6 |
 | The buyer controls the criteria | Segment 2: moving the price slider changes the winner from Acme to Meridian | #4 |
 | Constraints are filters, with reasons | Segment 3a: quantity 800 and 20 days remove five suppliers, each with a reason | #4 |
-| The agent reasons and uses tools | Segment 3b: the live activity trace shows the scan, scoring, a read-only tool call, the model's reasoning and validation | #2 #3 |
+| The agent reasons and uses tools | Segment 3b: the activity trace shows the quotes loaded through the read-only tool, the security scan, the LLM call and the output check; the result shows the model's own rationale and choice | #2 #3 |
 | Negotiation points save money | Segment 3c: "a 12.8% cut to match Meridian", "Net 30 to Net 60" | Business value |
 | A human decides; no order is placed | Segment 3d: the buyer approves, and the screen reads "No order was placed" | #4 |
 | Manipulation cannot change the result | Segments 4 and 7b: two injectors (EN and ZH) are flagged and rank 7th and 8th; 380 planted injectors at scale, text-blind ranking 60/60 | #5 |

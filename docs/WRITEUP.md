@@ -67,8 +67,9 @@ constraints, reads the explanation, and makes the decision.
 sliders in a sidebar, results in the main area, with light and dark themes. On
 **Compare suppliers** it calls `POST /api/recommend/stream`, which returns
 newline-delimited JSON events while the agent works (usually 20–40 s). An "Agent
-activity" panel lists them with an elapsed timer: the read-only tool call, the security
-scan, each LLM call, the output check, and any repair. Between real events the panel
+activity" panel lists them with an elapsed timer: the quotes loaded through the read-only
+data tool (by the server, before the model runs), the security scan, each LLM call, the
+output check, and any repair. Between real events the panel
 also shows generic progress notes such as "Weighing lead time against reliability".
 These notes are fixed texts shown on a timer, not the model's reasoning. The last
 event carries the same `{"compare", "agent"}` payload as `/api/recommend`, and the page
@@ -568,6 +569,11 @@ records a decision.
   cut; other misphrasings of a correct number are not caught. The injection detector
   is pattern-based, and the design relies on isolation and the flag-guard rather than
   on detection alone.
+- **Tool use.** The model can call the two read-only tools, and the loop, scoping and
+  validation for that are tested. In practice it rarely needs to, because the prompt already
+  holds the ranking, levers and descriptions: none of the last 35 live requests in the
+  decision log contained a model tool call. A deeper agent would give the model less up
+  front and let it fetch supplier details on demand.
 - **Operations.** The site is HTTP only (no domain for a TLS certificate), there are no
   user accounts, so decisions are not attributed to a named buyer, and
   `decisions.jsonl` has no rotation.
@@ -602,10 +608,7 @@ The figures below are **illustrative assumptions, not measured results**.
 
 | Member | Role |
 |---|---|
-| HE RONG | Team lead, proposal |
-| WANG QIN YANG | Agent core (agent, gateway client, security, observability, tools) |
-| LIU ZI YANG | Backend and data (data, scoring, comparison service, JSON API, eval cases) |
-| ZHOU YU XIN | Frontend and deployment |
-
-Per the git history, the interactive UI commit (`c29476e`) and the Lightsail deploy
-commit (`ddc8d37`) were authored by WANG QIN YANG.
+| HE RONG | Team lead, business proposal, submission |
+| WANG QIN YANG | Agent core: LLM gateway client, tool-call loop, prompts, guardrails, deployment |
+| LIU ZI YANG | Backend and data: mock data, deterministic scoring, comparison service, API, evaluation cases |
+| ZHOU YU XIN | Frontend and deployment: decision workspace, Lightsail, demo video |

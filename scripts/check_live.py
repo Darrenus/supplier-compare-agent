@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 import urllib.error
@@ -40,7 +41,9 @@ import urllib.request
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 DEFAULT_BASE_URL = "http://56.10.70.203"
-EXPECTED_TITLE = "<title>Supplier Comparison Agent</title>"
+# Any <title> naming the app; the #18 redesign renamed it to
+# "Supplier Compare · Decision workspace".
+TITLE_RE = re.compile(r"<title>[^<]*Supplier Compar[^<]*</title>")
 EXPECTED_SKUS = ["BRK-100", "GSK-200", "CBL-300", "BRG-400", "PCB-500"]
 # Deterministic endpoints should answer well under this; slower is a warning
 # sign (overloaded workers) even if the body is correct.
@@ -121,9 +124,10 @@ def build_checks(base_url: str, timeout: float, recommend: bool,
         err = _expect_status(r, 200)
         if err:
             return False, err, r
-        if EXPECTED_TITLE not in r.text():
+        title = TITLE_RE.search(r.text())
+        if not title:
             return False, "page title missing", r
-        return True, f"{len(r.body)} bytes", r
+        return True, f"{title.group(0)[7:-8]} · {len(r.body)} bytes", r
 
     def check_health():
         r = get("/api/health")

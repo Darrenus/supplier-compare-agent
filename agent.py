@@ -198,8 +198,13 @@ def validate_answer(obj: Optional[Dict], ranked: List[Dict],
             if lever["dimension"] != "price" or "cut_pct" not in lever:
                 continue
             above, cut = f"{lever['gap']:.1f}", f"{lever['cut_pct']:.1f}"
+            def pct(value: str) -> str:
+                return rf"(?<![\d.]){re.escape(value)}\s*%"
             for point in points:
-                if _CUT_WORDS_RE.search(point) and re.search(rf"(?<![\d.]){re.escape(above)}\s*%", point):
+                # "14.7% above ... ask for a 12.8% cut" is correct; only a point
+                # that asks for a cut and cites the gap *without* the cut is wrong.
+                if (_CUT_WORDS_RE.search(point) and re.search(pct(above), point)
+                        and not re.search(pct(cut), point)):
                     errors.append(
                         f"{entry['supplier_id']}'s price is {above}% above the benchmark, but the "
                         f"price cut needed to match it is {cut}%; do not call {above}% a reduction")

@@ -325,3 +325,14 @@ def test_repair_fits_the_waf_limit_after_a_long_reply(gateway):
     assert "Let me think" not in second[2]["content"]
     size = len(json.dumps(second, ensure_ascii=False).encode("utf-8")) + agent._PAYLOAD_OVERHEAD
     assert size <= gateway_client.WAF_BODY_LIMIT
+
+
+def test_price_point_citing_gap_and_correct_cut_is_accepted(gateway):
+    # Copying the lever text ("14.7% above ... a 12.8% cut") is correct and
+    # must not be rejected just because 14.7% sits next to the word "cut".
+    point = ("Price is 14.7% above Meridian Industrial Supply (SGD 10.90) - ask for a price "
+             "match (a 12.8% cut)")
+    gateway([final("SUP-001", negotiation_points=[point])])
+    result = agent.compare(SKU)
+    assert result["source"] == "llm" and result["validated"] is True
+    assert result["errors"] == []

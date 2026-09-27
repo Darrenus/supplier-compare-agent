@@ -31,7 +31,9 @@ negotiation points, and the buyer approves or overrides it.
 | **Decision recorded in the audit log** | **Dark theme** |
 | ![Approved decision, logged with its request id; no order placed](docs/screenshots/decision-recorded.png) | ![Dark theme with the AI-generated explanation expanded](docs/screenshots/dark-theme.png) |
 
-Captured from the app with the real LLM gateway (BRK-100, default weights).
+Captured from the app with the real LLM gateway (BRK-100, default weights), before the
+streaming "Agent activity" panel replaced the ranking-first view; the ranking and
+recommendation now appear together when the agent finishes.
 
 ## Architecture
 

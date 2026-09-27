@@ -76,3 +76,55 @@ without FX), or a supplier whose `supplier_name`, `region` or
 Neither supplier wins any SKU under default weights. Ranking is computed in code,
 so the injected text cannot change it. `compare.compare_quotes` lists suppliers
 the detector flags in `injection_suppliers`.
+
+## Provenance and fitness for purpose
+
+**Where the data comes from.** Nowhere: every supplier, price and performance
+figure in `data/` was written by the team for this demo. None of it describes a
+real company, and the UI labels it "Demo data".
+
+**Why mock data.**
+- Real supplier quotations are commercially confidential, and no procurement
+  dataset we could publish carries the fields a buyer compares (per-quote price,
+  lead time, payment terms, MOQ, supplier on-time rate and quality score).
+- The evaluation needs *controlled* situations whose correct answer is known in
+  advance: a supplier that is cheapest but unreliable, a tie broken by one
+  dimension, a winner that changes when the weights change, and suppliers whose
+  free text carries a prompt injection (SUP-004 in English, SUP-007 in Chinese).
+  Real data would not guarantee any of these.
+
+**What is realistic and what is not.**
+
+| Realistic (modelled on common procurement practice) | Invented |
+|---|---|
+| The fields and their units: unit price, lead time in days, `Net N` / `2/10 Net 30` terms, MOQ, on-time delivery rate, audit-style 0–5 quality score | Every value, supplier name and product description |
+| Consistent supplier profiles across SKUs (a local stockist that is fast and expensive, a low-cost plant with big MOQs and weak on-time delivery, a premium specialist) | The specific price levels (SGD) and the single-currency assumption |
+| Trade-offs, so that no supplier is best on every dimension | The injection texts, which are planted attacks |
+
+**What it can and cannot show.**
+- It **can** show that the pipeline works end to end, and that each rule behaves
+  as documented. It can also show that the ranking follows the formula and the
+  buyer's weights, and that supplier text cannot change a score. The 7 eval
+  cases, the live-LLM eval and 120 tests rely on it.
+- It **cannot** show that the recommendations are commercially *good*: there is no
+  record of which supplier a real buyer chose or how the order turned out. It says
+  nothing about real price distributions or data quality.
+- **Scale** is covered separately. `eval/synthetic.py` generates seeded pools of 5–200
+  suppliers from four supplier archetypes with correlated price, lead time,
+  on-time rate and quality. `eval/scale_eval.py` checks correctness, text-blindness,
+  injection flagging and gateway request size on 60 such pools; see
+  [`eval/results/scale_eval.md`](../eval/results/scale_eval.md).
+
+**Switching to real data.** The app reads only `data/products.csv` and
+`data/quotes.csv` through `mock_data.py`, which validates every row (see above).
+To use real quotations:
+1. Export one row per supplier × SKU from the ERP / e-procurement system with the
+   columns in *Quote fields*. On-time rate and quality usually come from the supplier
+   scorecard, and lead time and terms come from the quotation itself.
+2. Convert prices to one currency per SKU. The loader rejects mixed currencies,
+   because the scoring does no FX conversion.
+3. Treat `product_description` as untrusted, as it is now. Real supplier text is
+   exactly where injections would come from.
+4. Re-run `python eval/run_eval.py`, `python -m pytest`, and `python eval/scale_eval.py`.
+   Then add golden cases built from past decisions whose outcome is known, so the
+   recommendations can be measured against what buyers actually chose.

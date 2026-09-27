@@ -240,6 +240,37 @@ curl -s -X POST localhost:8080/api/recommend -H 'Content-Type: application/json'
   agent. The response still includes the numbers:
   `{"error": "agent narration failed (RuntimeError)", "compare": {...}}`.
 
+## POST /api/decisions
+
+Human-in-the-loop: the buyer approves the recommendation or overrides it. The
+decision is appended to `decisions.jsonl` as a second record with the same
+`request_id` and `"type": "human_decision"`. **Nothing is ordered.**
+
+```bash
+curl -s -X POST localhost:8080/api/decisions -H 'Content-Type: application/json' \
+  -d '{"request_id":"req-c331c9b3","action":"override","supplier_id":"SUP-006",
+       "reason":"Existing framework contract"}'
+```
+```json
+{"decision": {"type": "human_decision", "request_id": "req-c331c9b3",
+  "timestamp": "2026-09-27T03:15:12+00:00", "action": "override",
+  "supplier_id": "SUP-006", "recommended_supplier_id": "SUP-001",
+  "agrees_with_agent": false, "reason": "Existing framework contract",
+  "order_placed": false}}
+```
+
+| Rule | Status |
+|---|---|
+| `request_id`, `action`, `supplier_id` must be non-empty strings; `action` is `approve` or `override` | 400 |
+| `approve` must name the recommended supplier | 400 |
+| `override` must name another supplier from that comparison and give a reason of 5-500 characters | 400 |
+| unknown `request_id` | 404 |
+| the request already has a decision (the log is append-only), or it had no eligible supplier | 409 |
+| recorded | **201** |
+
+A file lock around the check and the append makes "one decision per request"
+hold across gunicorn workers.
+
 ## Python API: `agent.compare(sku, quotes=None, weights=None, quantity=None)`
 
 `quantity` is optional and only feeds the MOQ-headroom negotiation lever, so

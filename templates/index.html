@@ -201,9 +201,13 @@
       el("span", { class: "bar", style: `width:${Math.round(Math.max(0, Math.min(1, value)) * width)}px` }));
   }
 
-  function sourceBadge(source) {
+  function sourceBadge(source, errors) {
+    // A fallback is either the gateway failing or Claude's answer failing output
+    // validation; say which, so a rejected answer is not reported as an outage.
+    const rejected = (errors || []).some(e => e.startsWith("invalid answer"));
     const text = { llm: "Written by Claude", offline: "Offline template (no gateway key)",
-                   fallback: "Template fallback (LLM unavailable)" }[source] || source;
+                   fallback: rejected ? "Template: Claude's answer failed validation"
+                                      : "Template fallback (LLM unavailable)" }[source] || source;
     return el("span", { class: "badge " + source, title: "agent.source = " + source }, text);
   }
 
@@ -228,7 +232,7 @@
     const rec = agent.recommendation;
     if (!rec) return el("div", { class: "panel" }, "No supplier meets these constraints. Relax the quantity or lead-time limit.");
     return el("div", { class: "panel rec" },
-      el("div", { class: "muted small" }, "Recommendation", sourceBadge(agent.source)),
+      el("div", { class: "muted small" }, "Recommendation", sourceBadge(agent.source, agent.errors)),
       el("div", { class: "who" }, `${rec.recommended_supplier} `, el("span", { class: "muted small" }, rec.recommended_supplier_id)),
       el("p", {}, rec.rationale),
       el("div", { class: "cols" },

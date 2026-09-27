@@ -105,3 +105,9 @@ ranking summary.
 The live site for the judges deploys to the team's AWS Lightsail box
 (`56.10.70.203`, Static IP). See `COLLABORATION.md` for the ownership and sprint
 plan.
+
+nginx rate-limits the endpoints that call the LLM (`POST /api/recommend` and the
+legacy `POST /` form): 6 requests per minute per IP (bursts of 4) and 30 per
+minute for the whole site, so the public site cannot drain the shared gateway.
+Other `/api/` routes allow 10 requests per second per IP. Over the limit, the
+response is `429` with `Retry-After: 60` and the usual JSON error body.

@@ -22,6 +22,11 @@ Served by `app.py` next to the existing HTML page at `/`, which is unchanged.
 
 ## Errors
 
+In production, nginx also returns **429** (`Retry-After: 60`, same JSON error
+shape) when a client exceeds the rate limits in `deploy/nginx.conf`:
+`/api/recommend` allows 6 requests per minute per IP (bursts of 4) and 30 per
+minute site-wide, and other `/api/` routes allow 10 per second per IP.
+
 Every `/api/*` error uses the same shape. No stack traces are returned.
 
 ```json

@@ -92,6 +92,17 @@ def test_golden_path(gateway, _isolated_log):
     assert len(fake.requests) == 1
 
 
+def test_agent_may_pick_a_different_clean_supplier(gateway):
+    # The model is free to recommend any compared, non-flagged supplier, not
+    # just the code's #1.
+    runner_up = score_suppliers(tools.get_quotes(SKU))[1]["supplier_id"]  # SUP-005
+    assert runner_up not in INJECTED
+    gateway([final(runner_up)])
+    result = agent.compare(SKU)
+    assert result["source"] == "llm" and result["validated"] is True
+    assert result["recommendation"]["recommended_supplier_id"] == runner_up
+
+
 def test_prompt_fits_waf_limit_and_has_code_numbers(gateway):
     fake = gateway([final(top_id())])
     agent.compare(SKU)

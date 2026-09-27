@@ -175,9 +175,11 @@ This is the output of click 1 (quantity 800 only). The numbers on screen will
 be identical on every run; the model's wording will vary slightly.
 
 **Say:** "Every number in that paragraph (0.616, the 3.3% gap, the 9 days)
-comes from our code. The model's answer is checked before display: it must
-recommend the top-scored supplier and name only real suppliers, otherwise it
-gets one repair attempt, then we fall back to a deterministic template."
+comes from our code. The model makes the final choice itself — it may agree or
+disagree with the reference ranking — but its answer is checked before display:
+it must name a real supplier in the comparison (and never a flagged one),
+otherwise it gets one repair attempt, then we fall back to a deterministic
+template."
 
 **Judges should notice:** negotiation points and risks support a human
 decision; nothing is ordered (#4); output validation (#5); request id and

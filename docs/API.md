@@ -211,12 +211,13 @@ curl -s -X POST localhost:8080/api/recommend -H 'Content-Type: application/json'
   content as one plain-text block, for the HTML page. `recommendation` is
   `null` only when there are no eligible quotes.
 - `agent.source` says who wrote the text:
-  - `"llm"`: the model's answer, which passed output validation. It must
-    recommend the #1 supplier by score and only name suppliers in the input.
-    Every number in its text must also appear in the data it was given
-    (rounding and 0.97 ↔ 97% are accepted, small integers up to 10 are always
-    allowed), and a "reduce the price by x%" point must use `cut_pct`, not the
-    "x% above" gap. A rejected answer gets one repair turn.
+  - `"llm"`: the model's answer, which passed output validation. The model may
+    recommend any supplier in the comparison (not just the #1 by score), but
+    must only name suppliers in the input, and never one flagged by the
+    security scan. Every number in its text must also appear in the data it
+    was given (rounding and 0.97 ↔ 97% are accepted, small integers up to 10
+    are always allowed), and a "reduce the price by x%" point must use
+    `cut_pct`, not the "x% above" gap. A rejected answer gets one repair turn.
   - `"offline"`: no gateway key; a template built from the scores and levers.
   - `"fallback"`: a key is set but the gateway failed or the model's answer
     was rejected twice; the same template is shown and `agent.errors` says why.

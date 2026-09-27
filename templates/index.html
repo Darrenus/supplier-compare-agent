@@ -6,8 +6,8 @@
   <title>Supplier Compare · Decision workspace</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath fill='%23245140' d='M16 1 29 8 25 25 16 31 3 24 7 7z'/%3E%3Cpath fill='white' d='m17 5-7 13h6l-1 9 8-14h-6z'/%3E%3C/svg%3E" />
   <script>try { document.documentElement.dataset.theme = localStorage.getItem('supplier-theme') || 'light'; } catch (_) {}</script>
-  <link rel="stylesheet" href="{{ url_for('static', filename='workspace.css') }}" />
-  <script defer src="{{ url_for('static', filename='workspace.js') }}"></script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='workspace.css') }}?v={{ asset_version }}" />
+  <script defer src="{{ url_for('static', filename='workspace.js') }}?v={{ asset_version }}"></script>
 </head>
 <body>
   <a class="skip-link" href="#workspace">Skip to comparison</a>

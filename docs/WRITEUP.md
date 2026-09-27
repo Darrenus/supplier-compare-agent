@@ -14,16 +14,18 @@ opportunities (a competitor is cheaper, faster or offers longer terms) are misse
 
 **Approach.** We split the job into two parts with a hard boundary between them:
 
-1. **Code decides.** A deterministic engine (`scoring.py`, `compare.py`) applies the
+1. **Code computes the reference.** A deterministic engine (`scoring.py`, `compare.py`) applies the
    buyer's hard constraints, normalises every dimension, computes a weighted score,
    ranks the suppliers, finds the best-in-class value per dimension, and turns the
    gaps into concrete negotiation levers. Given the same inputs, it always returns the
    same output, and every number can be traced to a formula.
-2. **The LLM explains.** The agent (`agent.py`) gives Claude Sonnet 4.5 (through the
-   course's LLM gateway) the code-computed ranking and levers. Claude writes a short
-   rationale, negotiation points and risks as validated JSON. It cannot change the
-   ranking: output validation rejects any answer whose recommended supplier is not the
-   code's #1.
+2. **The LLM decides and explains.** The agent (`agent.py`) gives Claude Sonnet 4.5
+   (through the course's LLM gateway) the code-computed ranking and levers as a
+   *reference*, plus the raw quotes via read-only tools. Claude makes its own
+   recommendation and writes a short rationale, negotiation points and risks as
+   validated JSON. It may agree or disagree with the reference ranking; output
+   validation only requires that the chosen supplier is one of the compared suppliers
+   and is not security-flagged.
 
 The system **only recommends**. It has no tool that can place an order, send an email
 or write anywhere except its own decision log. A human buyer sets the weights and
@@ -248,8 +250,8 @@ tool-call protocol**:
    ```
 
    Rules:
-   - `recommended_supplier_id` must equal the code's #1 (a supplier *name* is mapped to
-     its id first).
+   - `recommended_supplier_id` must be one of the compared suppliers (a supplier *name*
+     is mapped to its id first) and must not be security-flagged.
    - `rationale` must be a non-empty string.
    - `negotiation_points` must be a list of strings with at least 1 item.
    - `risks` must be a list of strings.
@@ -307,8 +309,9 @@ shown in the UI) and in the decision log.
 
 **Detection is not the main defence.** Even an injection that the regexes miss cannot
 change the result. The ranking is computed in code from numeric fields only, and
-`product_description` is never scored. Output validation also forces the recommended
-supplier to be the code's #1.
+`product_description` is never scored. Output validation also refuses to recommend any
+supplier the security scan flagged, so an injection cannot steer the final choice even
+when the model is otherwise free to pick.
 
 **Output validation (#5.4).** This is the schema and rule check described in Section 5,
 with one repair attempt and then a deterministic fallback, so the UI never shows an
@@ -411,11 +414,11 @@ The body for both POST endpoints is `{"sku", "weights"?, "quantity"?,
   outliers. Early-payment discounts and volume price breaks are not modelled. Agent
   levers are computed without the order quantity, so the MOQ lever appears only in
   `/api/compare`.
-- **Validation depth.** The validator enforces the recommended supplier, the schema and
-  known supplier ids. Numbers inside the rationale are required by the prompt to be
-  copied, but they are not re-checked in code. The injection detector is pattern-based,
-  and the design relies on isolation and code-side ranking rather than on detection
-  alone.
+- **Validation depth.** The validator enforces that the recommended supplier is a
+  compared, non-flagged supplier, plus the schema and known supplier ids. Numbers
+  inside the rationale are required by the prompt to be copied, but they are not
+  re-checked in code. The injection detector is pattern-based, and the design relies
+  on isolation and the flag-guard rather than on detection alone.
 - **Integration and workflow.** Next steps are read-only ERP/e-procurement connectors
   for quotes and supplier scorecards, and an approval workflow where the recommendation
   and decision log go to an approver, with the final order still placed by a human.

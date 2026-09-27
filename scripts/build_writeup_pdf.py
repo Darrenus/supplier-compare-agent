@@ -7,7 +7,7 @@ Google Chrome. Needs the ``gh`` CLI (logged in) and Chrome.
 
 Usage:  python3 scripts/build_writeup_pdf.py
 """
-import os, pathlib, shutil, subprocess, sys, tempfile
+import os, pathlib, re, shutil, subprocess, sys, tempfile
 import json
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC = ROOT / "docs" / "WRITEUP.md"
@@ -20,6 +20,11 @@ body = subprocess.run(
     ["gh", "api", "markdown", "--input", "-"],
     input=json.dumps({"text": src, "mode": "markdown"}),
     capture_output=True, text=True, check=True).stdout
+# Relative image paths (e.g. screenshots/x.png) are relative to docs/; the HTML
+# is printed from a temp dir, so point them at the files on disk.
+docs_uri = SRC.parent.as_uri() + "/"
+body = re.sub(r'(src|href)="(?!https?:|file:|#|mailto:)([^"]+\.(?:png|jpe?g|gif|svg))"',
+              lambda m: f'{m.group(1)}="{docs_uri}{m.group(2)}"', body)
 css = """
 @page { size: A4; margin: 16mm 15mm 18mm 15mm; }
 body { font-family: -apple-system, "Helvetica Neue", "PingFang SC", Arial, sans-serif;
@@ -43,6 +48,7 @@ tr { break-inside: avoid; }
 li > p { margin: 2pt 0; }
 ul, ol { margin: 4pt 0 8pt; }
 .markdown-heading a.anchor, .anchor { display: none; }
+img { max-width: 100%; border: 1px solid #d0d7de; border-radius: 4px; margin: 6pt 0; }
 hr { border: none; border-top: 1px solid #ccc; margin: 8pt 0; }
 a { color: #0b5c8a; text-decoration: none; }
 strong { color: #111; }

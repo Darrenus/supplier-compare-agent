@@ -114,7 +114,7 @@ request id links to the full audit record (Section 7).
 | LLM client | `gateway_client.py` | Ollama/OpenAI-compatible gateway calls, retries, token usage |
 | Observability | `observability.py` | Appends the agent's decision record and the buyer's decision to `decisions.jsonl` |
 | Web + API | `app.py`, `templates/index.html`, `static/` | Flask routes, JSON API (incl. `/api/decisions`), decision workspace UI |
-| Evaluation | `eval/cases.py`, `eval/run_eval.py`, `eval/live_eval.py`, `tests/`, `scripts/` | Golden + adversarial cases, live-LLM eval, 111 pytest tests, live-site checks, GitHub Actions CI |
+| Evaluation | `eval/cases.py`, `eval/run_eval.py`, `eval/live_eval.py`, `eval/scale_eval.py`, `eval/synthetic.py`, `tests/`, `scripts/` | Golden + adversarial cases, live-LLM eval, synthetic scale eval, 120 pytest tests, live-site checks, GitHub Actions CI |
 | Deployment | `deploy/` | Lightsail setup: gunicorn, nginx (with rate limits), systemd |
 
 ## 3. Data model and mock-data assumptions
@@ -141,6 +141,19 @@ pairs, an empty currency, an SKU quoted in more than one currency, and a supplie
 whose `supplier_name`, `region` or `product_description` differs between its rows.
 Files may carry a UTF-8 BOM (Excel's "CSV UTF-8" format). `compare_quotes` also
 refuses quotes that mix currencies (HTTP 400 from the API).
+
+**Provenance** (details in `docs/DATA.md`). The dataset is **mock data written by the
+team**; it describes no real company, and the UI labels it "Demo data". We chose this
+deliberately. Real quotations are commercially confidential. The evaluation also needs
+controlled situations whose right answer is known in advance: a cheap but unreliable
+supplier, ties, a winner that flips when the weights change, and planted injections.
+The fields, units and supplier profiles follow common procurement practice; every value
+is invented. The data therefore shows that the pipeline and its rules work as
+specified, and that supplier text cannot move a score. It cannot show that the
+recommendations are commercially *good*, because there are no real outcomes to compare
+against. Scale is tested separately on synthetic pools of up to 200 suppliers
+(Section 7). Switching to real quotations only means replacing the two CSV files; the
+loader validates every row.
 
 **Assumptions** (also in `docs/DATA.md`): all data is invented for the demo. All prices
 are in SGD; one currency per SKU is enforced, so no FX conversion is done. `2/10 Net 30` is scored as Net 30 (the
@@ -241,7 +254,10 @@ tool-call protocol**:
 3. **Prompt.** The system prompt (`security.build_system_prompt`) contains the security
    rules, the tool protocol, and the rule "copy every number, never invent or
    recompute". The user prompt contains, in this order:
-   - the code-computed ranking with raw values
+   - the code-computed ranking with raw values: the top `PROMPT_TOP_K = 8` in detail
+     (every demo SKU in full), then "+N more ranked below". Ranking, levers and
+     validation still use every eligible quote. Without this cap the request passes
+     the gateway's 8 KiB limit at about 22 suppliers.
    - the code-computed levers
    - the security-scan result
    - the supplier descriptions wrapped in `<supplier_data>` (flagged ones replaced by
@@ -402,8 +418,8 @@ offline.
 Result on the current code: **7/7 passed (100%)**. There is also 1 optional live-LLM
 case (`llm_narration_validates_supplier`), which is skipped when no gateway key is set.
 
-**Unit and API tests**, `pytest`: **111 passed** (test_api 43, test_compare 30,
-test_agent 28, test_live_eval 4, test_scoring 6). `tests/conftest.py` forces offline mode and redirects
+**Unit and API tests**, `pytest`: **120 passed** (test_api 43, test_compare 30,
+test_agent 28, test_scale 9, test_live_eval 4, test_scoring 6). `tests/conftest.py` forces offline mode and redirects
 the decision log, so tests never spend tokens. The agent tests replace the gateway with
 scripted replies and cover:
 - the golden path and the tool-call-then-answer path
@@ -452,6 +468,30 @@ validation (which would have forced the code's #1 if it had). The run used 14 LL
 (about 104k tokens); 3 cases needed one repair because the model cited numbers it had
 computed itself (38, 11.2, 60), which the numeric grounding rejected.
 
+**Scale evaluation** (`python eval/scale_eval.py`, report in
+`eval/results/scale_eval.md`). The demo data has at most 8 quotes per SKU, so
+`eval/synthetic.py` generates seeded pools of 5–200 suppliers. Each supplier follows
+one of four archetypes (budget, balanced, premium, express) with correlated price, lead
+time, on-time rate and quality, and 10% carry an English or Chinese injection. Over 60
+pools:
+
+| Suppliers | `compare_quotes` (median) | First LLM request (max) | Every check |
+|---|---|---|---|
+| 5 | 0.08 ms | 4.6 KB | 10/10 |
+| 50 | 0.5 ms | 5.7 KB | 10/10 |
+| 200 | 2.1 ms | 5.6 KB | 10/10 |
+
+The checks are:
+- the ranking equals an independent re-implementation of the Section 4 formula;
+- it is unchanged when every description is replaced (text-blind), and when the input
+  is shuffled;
+- planted injections are flagged exactly;
+- the first request leaves 2 KB of the 8 KiB limit for a repair turn.
+
+A live run on a 50-supplier pool returned `source="llm"`, validated, recommending the
+code's #1. Before the prompt cap, the same pool produced a 13.9 KB request and fell
+back without calling the LLM.
+
 **Live LLM check.** With the real gateway and default weights, all 5 SKUs returned
 `source="llm"` and `validated=true`. Four needed 1 LLM call. For CBL-300 the first
 answer contained a number the model had computed itself (0.141); validation rejected
@@ -495,11 +535,13 @@ records a decision.
 
 ## 10. Limitations and future work
 
-- **Mock data.** All 28 quotes are invented. As a real-data option, we identified the
-  public USAID/PEPFAR Supply Chain Management System (SCMS) delivery-history dataset.
-  It has about 10,300 shipment lines; 55 items are supplied by 3 or more vendors, with the real unit price, scheduled vs actual
-  delivery (usable for on-time rate), and PO-to-delivery lead time. It does not contain
-  payment terms or quality ratings, so those would need to be imputed or dropped.
+- **Mock data.** All 28 quotes are invented (see the provenance note in Section 3), so
+  the system is not validated against real buying decisions. The next step is real
+  quotations and supplier scorecards from an ERP export. Golden cases would then be
+  built from past decisions with known outcomes, so recommendation quality can be
+  measured. Public shipment datasets such as USAID/PEPFAR's Supply Chain Management
+  System (SCMS) delivery history carry real unit prices and delivery dates. They lack
+  payment terms and quality ratings, which would have to be imputed or dropped.
 - **Currency.** Every price is SGD and no FX conversion is done. Real use needs FX rates
   at a fixed date and landed cost (freight, duty).
 - **Single SKU per comparison.** Real sourcing events are often multi-SKU baskets with

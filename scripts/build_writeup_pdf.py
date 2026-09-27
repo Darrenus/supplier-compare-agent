@@ -38,8 +38,8 @@ p, li { orphans: 3; widows: 3; }
 code { font-family: Menlo, "SF Mono", "PingFang SC", monospace; font-size: 8.6pt;
        background: #f2f4f6; padding: 0 2px; border-radius: 2px; }
 pre { background: #f6f8fa; border: 1px solid #e1e4e8; border-radius: 4px;
-      padding: 7pt 8pt; overflow: hidden; break-inside: avoid; font-size: 7.1pt; line-height: 1.22; }
-pre code { background: none; padding: 0; font-size: 7.1pt; line-height: 1.18; white-space: pre; }
+      padding: 7pt 8pt; overflow: hidden; break-inside: avoid; font-size: 6.7pt; line-height: 1.18; }
+pre code { background: none; padding: 0; font-size: 6.6pt; line-height: 1.16; white-space: pre; }
 table { border-collapse: collapse; width: 100%; margin: 6pt 0 10pt; font-size: 8.8pt;
         break-inside: auto; }
 th, td { border: 1px solid #d0d7de; padding: 3pt 5pt; text-align: left; vertical-align: top; }
@@ -48,7 +48,7 @@ tr { break-inside: avoid; }
 li > p { margin: 2pt 0; }
 ul, ol { margin: 4pt 0 8pt; }
 .markdown-heading a.anchor, .anchor { display: none; }
-img { max-width: 100%; border: 1px solid #d0d7de; border-radius: 4px; margin: 6pt 0; }
+img { max-width: 88%; display: block; margin-left: auto; margin-right: auto; border: 1px solid #d0d7de; border-radius: 4px; margin: 6pt 0; }
 hr { border: none; border-top: 1px solid #ccc; margin: 8pt 0; }
 a { color: #0b5c8a; text-decoration: none; }
 strong { color: #111; }

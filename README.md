@@ -11,6 +11,13 @@ in control).
 
 **Live demo:** <http://56.10.70.203> · **Write-up:** [`docs/WRITEUP.md`](docs/WRITEUP.md)
 
+**Data.** All supplier quotes are **mock data** written for this demo; no real
+companies are described. The fields, units and trade-offs follow common procurement
+practice, and two suppliers carry planted prompt injections for the security tests.
+Scale is tested separately on synthetic pools of up to 200 suppliers. Why mock data,
+what it can and cannot show, and how to switch to real quotations:
+[`docs/DATA.md` → Provenance](docs/DATA.md#provenance-and-fitness-for-purpose).
+
 ## Screenshots
 
 The recommendation: code picks the supplier, Claude writes the explanation and

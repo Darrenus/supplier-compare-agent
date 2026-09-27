@@ -61,13 +61,90 @@
     if (!node || reducedMotion.matches) return;
     node.animate([{opacity:0,transform:'translateY(7px)'},{opacity:1,transform:'translateY(0)'}],{duration:420,easing:'cubic-bezier(.2,.7,.2,1)'});
   }
+  // Rotating comparison notes, not backend progress or model reasoning traces.
+  const WAITING_NOTES = [
+    ['Beyond the price tag', 'A lower unit price is one part of a good purchasing decision.'],
+    ['The bigger picture', 'Your priorities bring cost, speed, quality, and reliability together.'],
+    ['Time matters, too', 'A shorter lead time can make a meaningful difference to your plans.'],
+    ['Room to negotiate', 'Gaps between quotes can be useful starting points for a conversation.'],
+    ['Quality in focus', 'Quality ratings add context to the numbers on the quote.'],
+    ['Reliability counts', 'On-time delivery helps you compare the promise with the track record.'],
+    ['A little breathing room', 'Payment terms can matter just as much as the headline price.'],
+    ['Your priorities lead', 'The ranking reflects the weights you selected.'],
+    ['Small details, real impact', 'Minimum order quantities can change which suppliers fit your purchase.'],
+    ['Look beneath the score', 'Open a supplier’s score details to see each dimension’s contribution.'],
+    ['The trade-off behind the total', 'Two similar scores can come from very different strengths.'],
+    ['More than the cheapest quote', 'The best weighted fit balances the dimensions that matter to you.'],
+    ['A clearer starting point', 'Your computed comparison is ready to explore while the explanation loads.'],
+    ['Keep the alternatives in view', 'A close runner-up may offer a different balance of strengths.'],
+    ['Delivery, in perspective', 'Quoted lead time and on-time delivery measure different things.'],
+    ['Make the numbers useful', 'Benchmarks give negotiation conversations a concrete starting point.'],
+    ['The value of flexibility', 'Different payment terms may offer different purchasing advantages.'],
+    ['Confidence through context', 'Read the rationale alongside the scores before making your choice.'],
+    ['Every priority has a place', 'Changing a weight changes how much that dimension contributes.'],
+    ['Constraints come first', 'Quantity and lead-time limits determine which quotes are eligible.'],
+    ['A second look can help', 'Compare the leading supplier with the next-best eligible option.'],
+    ['From comparison to conversation', 'Negotiation opportunities help you frame the next supplier discussion.'],
+    ['Your call, with context', 'You can approve the recommendation or record a different choice.'],
+    ['Worth a thoughtful decision', 'The explanation is still being prepared. Your ranking remains available.']
+  ];
+  function startWaitingNotes() {
+    const panel = $('out').querySelector('.generation-state.pending');
+    if (!panel) return () => {};
+    const title = panel.querySelector('.generation-note-title');
+    const caption = panel.querySelector('.generation-caption');
+    const elapsed = panel.querySelector('.generation-elapsed');
+    const started = Date.now();
+    let index = 0, rotationTimer;
+    const update = () => {
+      const duration = 7000 + Math.floor(Math.random() * 3001);
+      panel.dataset.noteDuration = String(duration);
+      for (const [node, text] of [[title, WAITING_NOTES[index][0]], [caption, WAITING_NOTES[index][1]]]) {
+        const letters = Array.from(text);
+        const visual = el('span',{class:'waiting-letters'},letters.map((letter,i)=>
+          el('span',{class:'waiting-letter',style:`--letter-delay:${(0.7+i/Math.max(1,letters.length-1)*(duration/1000-2.7)).toFixed(3)}s`},letter)));
+        visual.setAttribute('role','img');
+        visual.setAttribute('aria-label',text);
+        node.replaceChildren(visual);
+      }
+      if (!reducedMotion.matches) {
+        panel.querySelector('.generation-copy').animate([
+          {opacity:0,transform:'translateY(4px)',filter:'blur(1px)'},
+          {opacity:1,transform:'translateY(0)',filter:'blur(0)'}
+        ], {duration:850,easing:'cubic-bezier(.2,.7,.2,1)'});
+      }
+      rotationTimer = setTimeout(() => {
+        index = (index + 1) % WAITING_NOTES.length;
+        update();
+      }, duration);
+    };
+    update();
+    const timer = setInterval(() => {
+      elapsed.textContent = `${Math.floor((Date.now() - started) / 1000)}s elapsed`;
+    }, 1000);
+    return () => { clearInterval(timer); clearTimeout(rotationTimer); };
+
+  }
   function generationState(state) {
     const label = state === 'pending' ? 'Preparing your recommendation' : state === 'complete' ? 'Recommendation ready' : 'Comparison ready';
     const node = el('div',{class:'generation-state '+state},el('span',{class:'generation-icon'},state==='pending'?'': '✓'),el('div',{},el('strong',{},label),el('span',{class:'generation-caption'},state==='pending'?'You can explore the scores while we review the quotes.':state==='complete'?'Review the recommendation and negotiation opportunities below.':'Rule-based guidance is available below.')));
     node.setAttribute('role','status');
     if(state==='pending') {
+      node.removeAttribute('role');
+      const copy = el('div',{class:'generation-copy'},
+        el('span',{class:'generation-kicker'},'COMPARISON NOTES'),
+        el('strong',{class:'generation-note-title'},WAITING_NOTES[0][0]),
+        el('span',{class:'generation-caption'},WAITING_NOTES[0][1]));
+      copy.setAttribute('aria-live','off');
+      const orbit = el('span',{class:'generation-orbit'},el('span',{class:'generation-icon'}),el('span',{class:'generation-core'},'✦'));
+      orbit.setAttribute('aria-hidden','true');
+      const elapsed = el('span',{class:'generation-elapsed'},'0s elapsed');
+      elapsed.setAttribute('aria-hidden','true');
+      const footer = el('div',{class:'generation-footer'},el('span',{},'Preparing your recommendation',el('span',{class:'thinking-dots'},'…')),elapsed);
       const shimmer=el('span',{class:'generation-track'},el('span',{class:'generation-sweep'}));
-      shimmer.setAttribute('aria-hidden','true');node.append(shimmer);
+      shimmer.setAttribute('aria-hidden','true');
+      node.replaceChildren(orbit,copy,footer,shimmer);
+      node.setAttribute('aria-label','Preparing your recommendation. Comparison notes rotate while you wait.');
     }
     return node;
   }
@@ -156,7 +233,7 @@
       const why=el('details',{id:'why-'+r.supplier_id,class:'why-details'},el('summary',{class:'why-toggle'},'Why this supplier?',el('span',{class:'why-chevron','aria-hidden':'true'},'▸')),el('div',{class:'why'},DIMS.map(([key,label])=>[
         el('span',{class:'dim'},`${label} · ${Math.round(compare.weights[key]*100)}%`),el('span',{},`${r.breakdown[key].toFixed(2)} → +${r.weighted[key].toFixed(3)}`)
       ])));
-      return el('tr',{class:i===0?'top':''},el('td',{},i+1),el('td',{},el('div',{class:'supplier-name'},r.supplier),el('div',{class:'supplier-id'},r.supplier_id,r.injection_flag?el('span',{class:'badge inj'},'Flagged'):null),why),
+      return el('tr',{class:i===0?'top':''},el('td',{},i+1),el('td',{},el('div',{class:'supplier-name'},r.supplier),el('div',{class:'supplier-meta'},el('span',{class:'supplier-id'},r.supplier_id,r.injection_flag?el('span',{class:'badge inj'},'Flagged'):null),why)),
         el('td',{class:'num'},r.score.toFixed(3),bar(r.score)),el('td',{class:'num'},money(r.raw.unit_price)),el('td',{class:'num'},`${r.raw.lead_time_days}d`),el('td',{class:'num'},r.raw.payment_terms),el('td',{class:'num'},r.raw.moq),el('td',{class:'num'},percent(r.raw.on_time_delivery_rate)),el('td',{class:'num'},r.raw.quality_rating));
     });
     const table=el('table',{},el('thead',{},el('tr',{},['Rank','Supplier','Score','Unit price','Lead time','Terms','MOQ','On-time','Quality'].map((h,i)=>el('th',{scope:'col',class:i>=2?'num':''},h)))),el('tbody',{},rows));
@@ -205,18 +282,19 @@
     if(!Object.values(body.weights).some(x=>x>0)){setStatus('error','Set at least one decision priority above zero.');return;}
     busy=true;$('go').disabled=true;$('go').replaceChildren(el('span',{class:'button-spinner'}),'Comparing…');$('out').setAttribute('aria-busy','true');
     $('server-result')?.remove();setStatus('loading','Comparing supplier quotes…');
-    let computed=false, comparison=null;
+    let computed=false, comparison=null, stopWaiting=()=>{};
     try{
       const {data}=await post('/api/compare',body);render(data,null,withAgent&&data.ranked.length>0);computed=true;comparison=data;
       if(withAgent&&data.ranked.length){
         setStatus('','');
         $('go').replaceChildren(el('span',{class:'button-spinner'}),'Preparing recommendation');
-        const {response,data:result}=await post('/api/recommend',body);finishRecommendation(result.compare,result.agent,!response.ok);
+        stopWaiting=startWaitingNotes();
+        const {response,data:result}=await post('/api/recommend',body);stopWaiting();finishRecommendation(result.compare,result.agent,!response.ok);
         setStatus(response.ok?'':'error',response.ok?'':`AI explanation unavailable. The computed comparison is still available. ${result.error || ''}`);
       }else setStatus('','');
       if(revision!==requestRevision)setStatus('','Settings changed during comparison. Compare again to apply your latest settings.');
     }catch(error){if(comparison)finishRecommendation(comparison,null,true);setStatus('error',`${computed?'The ranking is ready, but the AI explanation could not be loaded.':'Could not load the comparison.'} ${error.message} Please try again.`);}
-    finally{busy=false;$('go').disabled=false;$('go').replaceChildren('Compare suppliers ',el('span',{},'→'));$('out').setAttribute('aria-busy','false');}
+    finally{stopWaiting();busy=false;$('go').disabled=false;$('go').replaceChildren('Compare suppliers ',el('span',{},'→'));$('out').setAttribute('aria-busy','false');}
   }
   $('form').addEventListener('submit',event=>{event.preventDefault();compareRequest(true);});
   // Show real deterministic results on arrival, without spending LLM tokens.

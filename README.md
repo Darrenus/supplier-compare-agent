@@ -45,12 +45,14 @@ Captured from the app with the real LLM gateway (BRK-100, default weights).
    [ deterministic scoring ] scoring.score_suppliers()  <-- no LLM needed
                  |            price / lead time / payment terms / OTD / quality
                  v            each dimension normalized 0-1, weighted
-   [ LLM narration ] agent -> gateway_client.chat() -> AWS LLM Gateway
+   [ LLM decision ]   agent -> gateway_client.chat() -> AWS LLM Gateway
                  |            hardened system prompt (security.build_system_prompt)
                  |            manual JSON tool-call: model asks for get_quotes /
                  |            get_supplier_profile (read-only tools.py)
+                 |            the model chooses the supplier; the ranking above
+                 |            is a reference, not a hard constraint
                  v
-   [ output validation ]     chosen suppliers must exist in the input (#5.4)
+   [ output validation ]     chosen supplier must be a real, non-flagged one (#5.4)
                  |
                  v
    [ decision log ]          observability.log_decision() -> decisions.jsonl

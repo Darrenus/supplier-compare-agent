@@ -151,20 +151,68 @@
   function sourceBadge(source,errors){const rejected=(errors || []).some(e=>e.startsWith('invalid answer'));return el('span',{class:'badge'},({llm:'AI-generated explanation',offline:'Rule-based explanation',fallback:rejected?'AI answer failed validation · rule-based explanation':'AI unavailable · rule-based explanation'})[source] || 'Computed ranking');}
   // The request id opens its full audit record (agent + buyer decision) as JSON.
   function auditLink(requestId,label){return el('a',{href:'/api/decisions/'+encodeURIComponent(requestId),target:'_blank',rel:'noopener',title:'Open the audit record for this request'},label || requestId);}
+  // Agent activity trace (waterfall of phases, reasoning and tool calls).
+  const TRACE_ICONS={phase:'◆',tool:'⚙','tool-result':'✓','tool-error':'✕',repair:'↻'};
+  function renderTrace(){
+    const elapsed=el('span',{class:'trace-elapsed'},'0s');
+    const started=Date.now();
+    const timer=setInterval(()=>{elapsed.textContent=`${Math.floor((Date.now()-started)/1000)}s`;},1000);
+    const trace=el('section',{class:'trace'},
+      el('div',{class:'trace-heading'},el('h2',{},'Agent activity'),el('span',{class:'trace-live'},'● live ',elapsed)),
+      el('ol',{class:'trace-steps'}));
+    trace._timer=timer;
+    return trace;
+  }
+  function collapseTrace(trace){
+    if(trace._timer){clearInterval(trace._timer);trace._timer=null;}
+    const steps=trace.querySelector('.trace-steps');
+    const n=steps?steps.children.length:0;
+    const live=trace.querySelector('.trace-live');
+    if(live)live.replaceWith(el('span',{class:'trace-done'},'✓ complete'));
+    trace.classList.add('trace-complete');
+    const details=el('details',{class:'trace-details'},el('summary',{},`Agent activity · ${n} step${n===1?'':'s'}`));
+    details.append(trace);
+    return details;
+  }
+  function appendTraceStep(trace,kind,title,detail){
+    const steps=trace.querySelector('.trace-steps');
+    const cls=kind==='thinking'?'step-icon step-spinner':kind==='note'?'step-icon step-dot':'step-icon';
+    const glyph=(kind==='thinking'||kind==='note')?null:(TRACE_ICONS[kind]||'·');
+    const icon=el('span',{class:cls},glyph);
+    const titleNode=el('strong',{class:'step-title'},title,kind==='thinking'?el('span',{class:'thinking-dots'},'…'):null);
+    const li=el('li',{class:'step step-'+kind},icon,
+      el('div',{class:'step-body'},titleNode,detail?el('span',{class:'step-detail'},detail):null));
+    steps.append(li);
+    li.animate([{opacity:0,transform:'translateY(6px)'},{opacity:1,transform:'translateY(0)'}],{duration:320,easing:'cubic-bezier(.2,.7,.2,1)'});
+    li.scrollIntoView({behavior:reducedMotion.matches?'auto':'smooth',block:'nearest'});
+  }
+  function handleStreamEvent(event,trace){
+    if(event.type==='phase')appendTraceStep(trace,'phase',event.title,event.detail);
+    else if(event.type==='thinking')appendTraceStep(trace,'thinking',event.title,event.detail);
+    else if(event.type==='tool_call')appendTraceStep(trace,'tool',`${event.tool}(${Object.entries(event.args||{}).map(([k,v])=>`${k}=${JSON.stringify(v)}`).join(', ')})`,'Calling a read-only tool');
+    else if(event.type==='tool_result')appendTraceStep(trace,event.error?'tool-error':'tool-result',event.tool,event.error?`refused: ${event.error}`:(event.detail||'Tool returned data'));
+    else if(event.type==='repair')appendTraceStep(trace,'repair',event.title,event.detail);
+    else if(event.type==='note')appendTraceStep(trace,'note',event.text,'');
+  }
   function renderRecommendation(compare,agent,pending){
-    const top=compare.ranked[0];
-    if(!top)return el('section',{class:'empty-state'},el('span',{class:'empty-mark'},'∅'),el('h2',{},'No matching suppliers'),el('p',{},'Try increasing the order quantity or allowing a longer lead time.'));
+    if(!compare.ranked.length)return el('section',{class:'empty-state'},el('span',{class:'empty-mark'},'∅'),el('h2',{},'No matching suppliers'),el('p',{},'Try increasing the order quantity or allowing a longer lead time.'));
     const rec=agent?.recommendation;
+    const chosenId=rec?.recommended_supplier_id || compare.ranked[0].supplier_id;
+    const top=compare.ranked.find(r=>r.supplier_id===chosenId) || compare.ranked[0];
+    const deviates=top.supplier_id!==compare.ranked[0].supplier_id;
     const leverData=(compare.negotiation_levers || []).find(x=>x.supplier_id===top.supplier_id)?.levers || [];
     const points=rec?.negotiation_points || leverData.map(x=>x.text);
     const metrics=[ [money(top.raw.unit_price),'Unit price'],[`${top.raw.lead_time_days} days`,'Lead time'],[percent(top.raw.on_time_delivery_rate),'On-time delivery'],[`${top.raw.quality_rating} / 5`,'Quality'] ];
+    const subtitle=rec
+      ?(deviates?`Agent's choice — differs from the computed #1 (${compare.ranked[0].supplier}).`:`Agent's choice — matches the computed #1.`)
+      :'Highest weighted score across your priorities.';
     const explanation=el('details',{class:'explanation'},el('summary',{},'Why this recommendation?',sourceBadge(agent?.source,agent?.errors)),
       el('p',{},rec?.rationale || 'The highest weighted score among eligible suppliers, calculated from your selected priorities.'),
       points.length>2?el('div',{},el('h3',{},'More negotiation opportunities'),el('ul',{},points.slice(2).map(p=>el('li',{},p)))):null,
       rec?.risks?.length?el('div',{},el('h3',{},'Risks to consider'),el('ul',{},rec.risks.map(r=>el('li',{},r)))):null,
       agent?el('div',{class:'meta'},'Request ',auditLink(agent.request_id),` · LLM calls ${agent.usage?.llm_calls ?? 0} · Tokens ${agent.usage?.input_tokens ?? 0} in / ${agent.usage?.output_tokens ?? 0} out`):null);
     return el('section',{class:'rec'},
-      el('div',{class:'rec-heading'},el('div',{},el('p',{class:'eyebrow'},'★  Recommended supplier'),el('h2',{class:'who'},top.supplier),el('p',{class:'rec-subtitle'},'Highest weighted score across your priorities.')),
+      el('div',{class:'rec-heading'},el('div',{},el('p',{class:'eyebrow'},'★  Recommended supplier'),el('h2',{class:'who'},top.supplier),el('p',{class:'rec-subtitle'},subtitle)),
         el('div',{class:'hero-score'},el('strong',{},top.score.toFixed(3)),el('span',{},'Weighted score'))),
       el('div',{class:'metrics'},metrics.map(([value,label])=>el('div',{class:'metric'},el('strong',{},value),el('span',{},label)))),
       el('div',{class:'levers-heading'},'◇  Negotiation opportunities'),
@@ -299,7 +347,69 @@
     }catch(error){if(comparison)finishRecommendation(comparison,null,true);setStatus('error',`${computed?'The ranking is ready, but the AI explanation could not be loaded.':'Could not load the comparison.'} ${error.message} Please try again.`);}
     finally{stopWaiting();busy=false;$('go').disabled=false;$('go').replaceChildren('Compare suppliers ',el('span',{},'→'));$('out').setAttribute('aria-busy','false');}
   }
-  $('form').addEventListener('submit',event=>{event.preventDefault();compareRequest(true);});
-  // Show real deterministic results on arrival, without spending LLM tokens.
-  if(!$('server-result'))compareRequest(false);
+  async function streamRecommendation(){
+    if(busy)return;
+    const body=readRequest(), requestRevision=revision;
+    if(!Object.values(body.weights).some(x=>x>0)){setStatus('error','Set at least one decision priority above zero.');return;}
+    busy=true;$('go').disabled=true;
+    $('go').replaceChildren(el('span',{class:'button-spinner'}),'Agent working…');
+    $('out').setAttribute('aria-busy','true');
+    $('server-result')?.remove();
+    setStatus('loading','The agent is comparing quotes and writing its recommendation…');
+    const trace=renderTrace();
+    $('out').replaceChildren(trace);
+    let gotResult=false;
+    try{
+      const resp=await fetch('/api/recommend/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      if(!resp.ok){
+        const data=await resp.json().catch(()=>({}));
+        throw new Error(data.error || `HTTP ${resp.status}`);
+      }
+      const reader=resp.body.getReader();
+      const decoder=new TextDecoder();
+      let buffer='';
+      while(true){
+        const {done,value}=await reader.read();
+        if(done)break;
+        buffer+=decoder.decode(value,{stream:true});
+        let nl;
+        while((nl=buffer.indexOf('\n'))>=0){
+          const line=buffer.slice(0,nl).trim();
+          buffer=buffer.slice(nl+1);
+          if(!line)continue;
+          let event;try{event=JSON.parse(line);}catch(_){continue;}
+          if(event.type==='result'){
+            gotResult=true;
+            const summary=collapseTrace(trace);
+            render(event.compare,event.agent,false);
+            $('out').prepend(summary);
+            setStatus('','');
+          }else if(event.type==='error'){
+            setStatus('error',event.error || 'The agent could not finish.');
+            if(event.compare){const summary=collapseTrace(trace);render(event.compare,null,false);$('out').prepend(summary);}
+          }else{
+            handleStreamEvent(event,trace);
+          }
+        }
+      }
+      if(revision!==requestRevision)setStatus('','Settings changed during the run. Compare again to apply your latest settings.');
+    }catch(error){
+      if(!gotResult){
+        try{
+          const {data}=await post('/api/compare',body);
+          render(data,null,false);
+          setStatus('error',`The live agent stream failed (${error.message}); showing the computed comparison instead.`);
+        }catch(e2){
+          setStatus('error',error.message);
+        }
+      }
+    }finally{
+      busy=false;$('go').disabled=false;
+      $('go').replaceChildren('Compare suppliers ',el('span',{},'→'));
+      $('out').setAttribute('aria-busy','false');
+    }
+  }
+  $('form').addEventListener('submit',event=>{event.preventDefault();streamRecommendation();});
+  // The workspace starts empty. Results appear only after the buyer clicks
+  // "Compare suppliers", so the action has a clear, visible effect.
 })();

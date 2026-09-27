@@ -22,9 +22,14 @@ stack traces are returned.
 from __future__ import annotations
 
 import json
+import os
+import queue
+import random
+import threading
+import time
 from typing import Any, Dict, Optional, Tuple
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request
 from werkzeug.exceptions import HTTPException
 
 import agent
@@ -40,6 +45,35 @@ app = Flask(__name__)
 API_PREFIX = "/api/"
 
 
+def _asset_version() -> str:
+    """Cache-busting token for the static assets (based on their mtime)."""
+    static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+    try:
+        return str(int(max(os.path.getmtime(os.path.join(static_dir, name))
+                           for name in ("workspace.css", "workspace.js"))))
+    except OSError:
+        return "0"
+
+# The deterministic steps (tool load, scan, scoring, levers) happen within a
+# few milliseconds. They are spaced out on the streaming endpoint so the UI
+# reveals the agent trace one step at a time instead of all at once.
+STEP_PACING_SECONDS = 0.32
+
+# While the model is thinking (20-40 s), a new "thinking" line is emitted every
+# few seconds so the trace keeps moving instead of sitting still.
+THINKING_NOTES = [
+    "Reading the quotes",
+    "Comparing price against the benchmark",
+    "Weighing lead time against reliability",
+    "Reviewing the supplier descriptions",
+    "Checking the security scan",
+    "Applying your priorities to the trade-offs",
+    "Drafting the recommendation",
+]
+THINKING_NOTE_MIN_SECONDS = 2.0
+THINKING_NOTE_MAX_SECONDS = 7.0
+
+
 @app.route("/", methods=["GET", "POST"])
 def index():
     """Render the SKU picker and, on submit, the ranked comparison."""
@@ -52,6 +86,7 @@ def index():
         skus=SKUS,
         selected_sku=selected_sku,
         result=result,
+        asset_version=_asset_version(),
     )
 
 
@@ -154,12 +189,14 @@ def api_compare():
 
 @app.post("/api/recommend")
 def api_recommend():
-    """Deterministic comparison plus the agent's narrated Top-3.
+    """Deterministic comparison plus the agent's recommendation.
 
-    The comparison validates the request first; the agent then runs with the
-    normalized weights on the eligible quotes only, so its Top-3 matches
-    ``compare.ranked``. If the agent fails, the numbers are still returned
-    with status 502.
+    The comparison validates the request first; the agent then runs on the
+    eligible quotes with the normalized weights. The agent's ``top`` (its
+    reference ranking) matches ``compare.ranked``, but its final
+    ``recommendation`` is the model's own choice and may deviate from the
+    code's #1. If the agent fails, the numbers are still returned with
+    status 502.
     """
     kwargs, message = _parse_compare_body()
     if message:
@@ -193,6 +230,99 @@ def api_recommend():
             details[sid] = security.find_injections(descriptions.get(sid, ""))
     agent_result["injection_details"] = details
     return jsonify({"compare": result, "agent": agent_result})
+
+
+@app.post("/api/recommend/stream")
+def api_recommend_stream():
+    """Stream the agent's reasoning, tool calls and final recommendation.
+
+    Same validation and reference ranking as ``/api/recommend``, but the
+    response is newline-delimited JSON (NDJSON): one event per line as the
+    agent works, ending with ``{"type": "result", ...}`` carrying the full
+    ``{"compare", "agent"}`` payload. A ``{"type": "error", ...}`` event is
+    sent instead if the agent narration fails (the ``compare`` numbers are
+    still attached to it).
+    """
+    kwargs, message = _parse_compare_body()
+    if message:
+        return _error(message, 400)
+    result, err = _run_compare(kwargs)
+    if err:
+        return err
+    eligible_ids = {row["supplier_id"] for row in result["ranked"]}
+    eligible = [q for q in tools.get_quotes(kwargs["sku"])
+                if q.get("supplier_id") in eligible_ids]
+
+    events: "queue.Queue[Optional[Dict[str, Any]]]" = queue.Queue()
+
+    def _merge_injections(agent_result: Dict[str, Any]) -> Dict[str, Any]:
+        # Match compare.injection_suppliers (covers flagged quotes that were
+        # excluded by constraints, so the page can show every matched snippet).
+        agent_result["injection_flag"] = (bool(agent_result.get("injection_flag"))
+                                          or bool(result["injection_suppliers"]))
+        details = dict(agent_result.get("injection_details") or {})
+        descriptions = {q.get("supplier_id"): q.get("product_description", "")
+                        for q in tools.get_quotes(kwargs["sku"])}
+        for sid in result["injection_suppliers"]:
+            if sid not in details:
+                details[sid] = security.find_injections(descriptions.get(sid, ""))
+        agent_result["injection_details"] = details
+        return agent_result
+
+    def run() -> None:
+        last_emit = [0.0]
+
+        def emit(event: Dict[str, Any]) -> None:
+            # Pace the near-instant steps so the trace reveals one at a time.
+            now = time.monotonic()
+            wait = STEP_PACING_SECONDS - (now - last_emit[0])
+            if wait > 0:
+                time.sleep(wait)
+            last_emit[0] = time.monotonic()
+            events.put(event)
+
+        # A ticker keeps the trace moving while the model thinks: a fresh
+        # "thinking" line every 2-7 s, stopped as soon as the run finishes.
+        stop_ticker = threading.Event()
+
+        def ticker() -> None:
+            index = 0
+            while not stop_ticker.wait(random.uniform(THINKING_NOTE_MIN_SECONDS,
+                                                     THINKING_NOTE_MAX_SECONDS)):
+                events.put({"type": "note", "text": THINKING_NOTES[index % len(THINKING_NOTES)]})
+                index += 1
+
+        threading.Thread(target=ticker, daemon=True).start()
+        # The read-only data load is shown as the agent's first tool step.
+        emit({"type": "tool_call", "tool": "get_quotes", "args": {"sku": kwargs["sku"]}})
+        emit({"type": "tool_result", "tool": "get_quotes",
+              "detail": f"{len(eligible)} eligible quotes"})
+        try:
+            agent_result = agent.compare(kwargs["sku"], quotes=eligible,
+                                         weights=result["weights"],
+                                         quantity=kwargs["quantity"], on_event=emit)
+            agent_result = _merge_injections(agent_result)
+            events.put({"type": "result", "compare": result, "agent": agent_result})
+        except Exception as exc:  # noqa: BLE001 - never leak a stack trace
+            app.logger.exception("agent.compare failed for %s", kwargs["sku"])
+            events.put({"type": "error",
+                        "error": f"agent narration failed ({type(exc).__name__})",
+                        "compare": result})
+        finally:
+            stop_ticker.set()
+            events.put(None)  # sentinel: end of stream
+
+    threading.Thread(target=run, daemon=True).start()
+
+    def generate():
+        while True:
+            event = events.get()
+            if event is None:
+                break
+            yield json.dumps(event, ensure_ascii=False) + "\n"
+
+    return Response(generate(), mimetype="application/x-ndjson",
+                    headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
 
 
 @app.get("/api/decisions/<request_id>")

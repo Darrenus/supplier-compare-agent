@@ -9,9 +9,11 @@ Flow:
     3. Run the manual JSON tool-call loop against the gateway. The model may
        call read-only tools, scoped to this request's SKU and suppliers, and
        must finish with a JSON recommendation.
-    4. Validate that JSON (#5.4): it must recommend the top-scored supplier,
-       name only known suppliers, and have the required fields. One repair
-       attempt, then a deterministic fallback, so the UI never shows garbage.
+    4. Validate that JSON (#5.4): the recommended supplier must be one of the
+       compared suppliers (and never one flagged by the security scan), and the
+       answer must have the required fields. The model is free to deviate from
+       the objective ranking. One repair attempt, then a deterministic
+       fallback, so the UI never shows garbage.
     5. Write a decision log (#6.A) and return a structured result.
 
 Steps 1, 2, 4 (fallback) and 5 run without a gateway key.
@@ -22,7 +24,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import gateway_client
 import security
@@ -55,15 +57,18 @@ _CUT_WORDS_RE = re.compile(r"reduc|cut|discount|lower|decrease|drop", re.IGNOREC
 _PAYLOAD_OVERHEAD = 200
 # A reply with no JSON is kept in the history only up to this many characters.
 _HISTORY_REPLY_MAX_CHARS = 1200
+# Compact JSON replies are also capped: a verbose answer kept in full could
+# push a repair follow-up over the gateway's 8 KiB WAF limit.
+_HISTORY_JSON_MAX_CHARS = 1000
 
 # Final-answer format. Sent in the user message because the gateway may drop
 # or override the system prompt.
-_ANSWER_FORMAT = """Reply with ONLY this JSON object and nothing else:
+_ANSWER_FORMAT = """Reply with ONLY this JSON object (no prose, keep it brief):
 {"final": {
-  "recommended_supplier_id": "<the #1 supplier_id in the objective ranking>",
-  "rationale": "<2-4 sentences: why #1 wins, citing the numbers above, and how it compares with #2 and #3>",
-  "negotiation_points": ["<1-3 concrete asks to put to the recommended supplier, based on its levers>"],
-  "risks": ["<0-3 risks, e.g. flagged or unreliable suppliers>"]
+  "recommended_supplier_id": "<the supplier_id you choose>",
+  "rationale": "<1-2 sentences, cite the numbers>",
+  "negotiation_points": ["<1-2 asks>"],
+  "risks": ["<0-2 risks>"]
 }}"""
 
 
@@ -139,11 +144,17 @@ def facts_from_prompt(prompt: str) -> List[float]:
 
 def validate_answer(obj: Optional[Dict], ranked: List[Dict],
                     facts: Optional[List[float]] = None,
-                    levers: Optional[List[Dict]] = None) -> Tuple[Optional[Dict], List[str]]:
+                    levers: Optional[List[Dict]] = None,
+                    flagged: Optional[Dict[str, List[str]]] = None,
+                    descriptions: Optional[Dict[str, str]] = None) -> Tuple[Optional[Dict], List[str]]:
     """Output validation (#5.4) for the model's final JSON.
 
-    Besides the schema and the #1 supplier, two numeric checks run when
-    ``facts`` / ``levers`` are given:
+    The model may recommend any compared supplier; the objective ranking is a
+    reference, not a hard constraint. One hard rule remains: it must not
+    recommend a supplier whose description contains instruction-like text.
+    This is re-checked here from the raw descriptions, so it holds even if the
+    prompt-side redaction scan was bypassed (defence in depth).
+    Two numeric checks run when ``facts`` / ``levers`` are given:
 
     * grounding: every number in the text must appear in ``facts`` (the
       numbers the model was shown), so it cannot invent or recompute figures;
@@ -158,15 +169,18 @@ def validate_answer(obj: Optional[Dict], ranked: List[Dict],
         obj = obj["final"]
 
     errors: List[str] = []
-    top_id = ranked[0]["supplier_id"]
     by_name = {r["supplier"].lower(): r["supplier_id"] for r in ranked}
     known_ids = {r["supplier_id"] for r in ranked}
+    flagged_ids = set(flagged or {})
 
     rec = obj.get("recommended_supplier_id")
     if isinstance(rec, str):
         rec = by_name.get(rec.strip().lower(), rec.strip())
-    if rec != top_id:
-        errors.append(f"recommended_supplier_id must be {top_id!r} (the #1 by objective score), got {rec!r}")
+    if rec not in known_ids:
+        errors.append(f"recommended_supplier_id must be one of the compared suppliers {sorted(known_ids)}, got {rec!r}")
+    elif rec in flagged_ids or (descriptions is not None
+                                and security.detect_injection(descriptions.get(rec, ""))):
+        errors.append(f"cannot recommend {rec!r}: its description was flagged by the security scan")
 
     rationale = obj.get("rationale")
     if not isinstance(rationale, str) or not rationale.strip():
@@ -218,9 +232,10 @@ def validate_answer(obj: Optional[Dict], ranked: List[Dict],
 
     if errors:
         return None, errors
+    chosen = next(r for r in ranked if r["supplier_id"] == rec)
     return {
-        "recommended_supplier_id": top_id,
-        "recommended_supplier": ranked[0]["supplier"],
+        "recommended_supplier_id": rec,
+        "recommended_supplier": chosen["supplier"],
         "rationale": rationale.strip(),
         "negotiation_points": points,
         "risks": risks,
@@ -275,11 +290,16 @@ def _build_user_prompt(sku: str, ranked: List[Dict], quotes: List[Dict],
     return "\n".join([
         f"Compare suppliers for SKU {sku}.",
         "",
-        f"Objective ranking computed by code (score 0-1, higher is better; weights {weight_text}):",
+        f"Reference ranking computed by code (score 0-1, higher is better; weights {weight_text}):",
         *lines,
         "",
         "Negotiation levers computed by code:",
         *lever_lines,
+        "",
+        "Your task: choose the supplier you recommend and justify it. Apply "
+        "your own judgment to the trade-offs; you may agree or disagree with "
+        "the reference #1. Never recommend a supplier the security scan "
+        "flagged.",
         "",
         f"Security scan: {scan}",
         "",
@@ -302,11 +322,12 @@ def _history_entry(reply: str) -> str:
 
     Only the JSON object matters to the next turn; the prose around it can be
     several KiB and would push a repair or tool follow-up over the gateway's
-    8 KiB WAF limit, so it is dropped.
+    8 KiB WAF limit, so it is dropped. The JSON itself is capped too, so a
+    verbose rejected answer cannot blow the limit on a repair.
     """
     obj = extract_json(reply)
     if obj is not None:
-        return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+        return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))[:_HISTORY_JSON_MAX_CHARS]
     return reply[:_HISTORY_REPLY_MAX_CHARS]
 
 
@@ -350,21 +371,37 @@ def _run_tool(call: Dict, sku: str, quotes: List[Dict], flagged: Dict[str, List[
 
 def _run_agent_loop(system_prompt: str, user_prompt: str, sku: str, quotes: List[Dict],
                     ranked: List[Dict], flagged: Dict[str, List[str]], trace: Dict,
-                    levers: Optional[List[Dict]] = None) -> Optional[Dict]:
-    """Run the manual JSON tool-call loop; return a validated recommendation or None."""
+                    levers: Optional[List[Dict]] = None,
+                    on_event: Optional[Callable[[Dict], None]] = None) -> Optional[Dict]:
+    """Run the manual JSON tool-call loop; return a validated recommendation or None.
+
+    ``on_event``, when given, is called with progress event dicts so a caller
+    (the streaming API) can show the agent's reasoning and tool calls as they
+    happen.
+    """
     # Numbers the model may cite: everything in the prompt, plus tool results.
     facts = facts_from_prompt(user_prompt)
+    # Raw descriptions, so a flagged/injecting supplier can never be recommended
+    # even if the prompt-side scanning was bypassed.
+    descriptions = {q["supplier_id"]: q.get("product_description", "") for q in quotes}
     messages: List[Dict[str, str]] = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
     repairs = 0
-    for _ in range(MAX_STEPS):
+    for step in range(MAX_STEPS):
         # A body over the WAF limit gets a 403 that no retry can fix.
         size = len(json.dumps(messages, ensure_ascii=False).encode("utf-8")) + _PAYLOAD_OVERHEAD
         if size > gateway_client.WAF_BODY_LIMIT:
             trace["errors"].append(f"conversation too large for the gateway ({size} bytes)")
+            if on_event:
+                on_event({"type": "thinking", "title": "Context too large",
+                          "detail": "Stopped before the gateway could reject the oversized request."})
             return None
+        if on_event:
+            on_event({"type": "thinking", "title": "Agent reasoning",
+                      "detail": ("Reading the quotes and weighing the trade-offs."
+                                 if step == 0 else "Reviewing the tool result and continuing the analysis.")})
         reply, usage = gateway_client.chat_with_usage(messages)
         trace["usage"]["llm_calls"] += 1
         for key in ("input_tokens", "output_tokens"):
@@ -373,16 +410,27 @@ def _run_agent_loop(system_prompt: str, user_prompt: str, sku: str, quotes: List
 
         call = extract_tool_call(reply)
         if call:
+            if on_event:
+                on_event({"type": "tool_call", "tool": call["tool"], "args": call["args"]})
             record, result_text = _run_tool(call, sku, quotes, flagged, ranked)
             trace["tool_calls"].append(record)
+            if on_event:
+                on_event({"type": "tool_result", "tool": call["tool"], "error": record.get("error")})
             messages.append({"role": "user", "content": result_text})
             facts.extend(facts_from_prompt(result_text))
             continue
 
-        recommendation, errors = validate_answer(extract_json(reply), ranked, facts, levers)
+        recommendation, errors = validate_answer(extract_json(reply), ranked, facts, levers, flagged, descriptions)
         if recommendation:
+            if on_event:
+                on_event({"type": "phase", "phase": "validate",
+                          "title": "Validating the recommendation",
+                          "detail": "Schema, grounded numbers and the flagged-supplier rule all passed."})
             return recommendation
         trace["errors"].append("invalid answer: " + "; ".join(errors))
+        if on_event:
+            on_event({"type": "repair", "title": "Output check",
+                      "detail": "The answer failed validation; asking the agent to correct it."})
         if repairs >= MAX_REPAIRS:
             return None
         repairs += 1
@@ -469,7 +517,8 @@ def format_rationale(rec: Dict) -> str:
 
 def compare(sku: str, quotes: Optional[List[Dict]] = None,
             weights: Optional[Dict[str, float]] = None,
-            quantity: Optional[float] = None) -> Dict:
+            quantity: Optional[float] = None,
+            on_event: Optional[Callable[[Dict], None]] = None) -> Dict:
     """Compare suppliers for an SKU and return a structured recommendation.
 
     Args:
@@ -479,6 +528,8 @@ def compare(sku: str, quotes: Optional[List[Dict]] = None,
         quantity: Optional order quantity. It only feeds the MOQ-headroom
             negotiation lever; filtering by MOQ is the caller's job
             (``/api/recommend`` passes only eligible quotes).
+        on_event: Optional callback receiving progress event dicts (used by the
+            streaming API to surface the agent's reasoning and tool calls).
 
     Returns:
         A dict with ``request_id``, ``top`` (deterministic Top-3), ``scores``,
@@ -494,19 +545,36 @@ def compare(sku: str, quotes: Optional[List[Dict]] = None,
     """
     request_id = new_request_id()
     if quotes is None:
+        if on_event:
+            on_event({"type": "tool_call", "tool": "get_quotes", "args": {"sku": sku}})
         quotes = get_quotes(sku)
+        if on_event:
+            on_event({"type": "tool_result", "tool": "get_quotes",
+                      "detail": f"{len(quotes)} quotes returned"})
 
     # Step 1: injection scan over all supplier free-text.
+    if on_event:
+        on_event({"type": "phase", "phase": "scan",
+                  "title": "Scanning supplier text",
+                  "detail": "Checking every quote for instruction-like text before anything reaches the model."})
     flagged: Dict[str, List[str]] = {}
     for q in quotes:
         hits = security.find_injections(q.get("product_description", ""))
         if hits:
             flagged[q.get("supplier_id")] = hits
 
-    # Step 2: deterministic scoring + levers.
+    # Step 2: deterministic scoring + levers (the agent's reference ranking).
+    if on_event:
+        on_event({"type": "phase", "phase": "score",
+                  "title": "Building the reference ranking",
+                  "detail": f"Scoring {len(quotes)} quotes across price, lead time, terms, on-time delivery and quality."})
     ranked = score_suppliers(quotes, weights)
     top = ranked[:TOP_N]
     levers = _compute_levers(quotes, ranked, quantity)
+    if on_event:
+        on_event({"type": "phase", "phase": "levers",
+                  "title": "Computing negotiation levers",
+                  "detail": "Best-in-class benchmarks and gaps for the top suppliers."})
 
     # Steps 3-4: LLM narration with validation, else deterministic fallback.
     trace: Dict = {"tool_calls": [], "errors": [],
@@ -514,16 +582,25 @@ def compare(sku: str, quotes: Optional[List[Dict]] = None,
     recommendation: Optional[Dict] = None
     source = "offline"
     if ranked and gateway_client.has_gateway_key():
+        if on_event:
+            on_event({"type": "phase", "phase": "agent",
+                      "title": "Agent is deciding",
+                      "detail": "The model reads the quotes and makes its own recommendation."})
         user_prompt = _build_user_prompt(sku, ranked, quotes, levers, flagged, weights)
         try:
             recommendation = _run_agent_loop(security.build_system_prompt(), user_prompt,
-                                             sku, quotes, ranked, flagged, trace, levers)
+                                             sku, quotes, ranked, flagged, trace, levers,
+                                             on_event=on_event)
         except (gateway_client.GatewayError, EnvironmentError) as exc:
             trace["errors"].append(f"gateway: {exc}")
         source = "llm" if recommendation else "fallback"
 
     if ranked:
         if recommendation is None:
+            if on_event:
+                on_event({"type": "phase", "phase": "fallback",
+                          "title": "Using the deterministic fallback",
+                          "detail": "No validated model answer, so the recommendation comes from the reference ranking."})
             recommendation = fallback_recommendation(ranked, levers, flagged, quotes)
         rationale = format_rationale(recommendation)
     else:

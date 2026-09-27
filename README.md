@@ -9,6 +9,23 @@ hackathon by team **Show Me Your Token** (Public track, Team Code `DAG1YLPM`).
 The agent **recommends only — it never places orders** (human-in-the-loop stays
 in control).
 
+**Live demo:** <http://56.10.70.203> · **Write-up:** [`docs/WRITEUP.md`](docs/WRITEUP.md)
+
+## Screenshots
+
+The recommendation: code picks the supplier, Claude writes the explanation and
+negotiation points, and the buyer approves or overrides it.
+
+![Recommendation with negotiation opportunities and the buyer's decision](docs/screenshots/recommendation.png)
+
+| Ranking first, AI explanation loading | Why this supplier? + injection flags |
+|---|---|
+| ![The code-computed ranking renders at once while the AI recommendation loads](docs/screenshots/ranking-first.png) | ![Per-dimension score breakdown and two suppliers flagged for prompt injection](docs/screenshots/ranking-why-injection.png) |
+| **Decision recorded in the audit log** | **Dark theme** |
+| ![Approved decision, logged with its request id; no order placed](docs/screenshots/decision-recorded.png) | ![Dark theme with the AI-generated explanation expanded](docs/screenshots/dark-theme.png) |
+
+Captured from the app with the real LLM gateway (BRK-100, default weights).
+
 ## Architecture
 
 ```

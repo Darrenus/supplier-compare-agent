@@ -258,7 +258,7 @@ def _build_user_prompt(sku: str, ranked: List[Dict], quotes: List[Dict],
     weight_text = json.dumps({k: round(v, 3) for k, v in weights.items()}) if weights else "defaults"
 
     return "\n".join([
-        f"Compare suppliers for SKU {sku}. You only recommend; a human buyer makes the decision.",
+        f"Compare suppliers for SKU {sku}.",
         "",
         f"Objective ranking computed by code (score 0-1, higher is better; weights {weight_text}):",
         *lines,
@@ -420,7 +420,7 @@ def fallback_recommendation(ranked: List[Dict], levers: List[Dict],
         f"{top['supplier']} leads on every dimension; ask for a volume discount in exchange for a longer commitment."]
 
     names = {q["supplier_id"]: q.get("name", q["supplier_id"]) for q in quotes}
-    risks = [f"{names.get(sid, sid)} ({sid}): description contains instruction-like text; ignored and flagged."
+    risks = [f"{names.get(sid, sid)} ({sid}): description contains instruction-like text; flagged."
              for sid in sorted(flagged)]
     risks += [f"{r['supplier']} ({r['supplier_id']}): on-time delivery only {_pct(r['raw']['on_time_delivery_rate'])}."
               for r in ranked[:TOP_N] if r["raw"]["on_time_delivery_rate"] < 0.9]

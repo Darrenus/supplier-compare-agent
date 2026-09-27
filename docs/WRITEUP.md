@@ -65,17 +65,21 @@ constraints, reads the explanation, and makes the decision.
 
 **Page flow.** The page is a decision workspace: purchase requirements and priority
 sliders in a sidebar, results in the main area, with light and dark themes. On
-**Compare suppliers** it calls `POST /api/compare` first. The recommended supplier,
-its metrics and negotiation levers, the ranking table, exclusions and injection
-warning render as soon as that answers (about 0.1 s). It then calls
-`POST /api/recommend`; while the LLM works (usually 20–40 s) a progress panel shows the
-elapsed time and the ranking stays usable. When the answer arrives, the AI
-explanation, extra negotiation points and risks fill in. If the agent fails (502) or
-is rate-limited (429), the ranking stays on screen and a message explains why. Under
-the recommendation, the buyer approves it or overrides it (Section 6), and the
-request id links to the full audit record (Section 7).
+**Compare suppliers** it calls `POST /api/recommend/stream`, which returns
+newline-delimited JSON events while the agent works (usually 20–40 s). An "Agent
+activity" panel lists them with an elapsed timer: the read-only tool call, the security
+scan, each LLM call, the output check, and any repair. Between real events the panel
+also shows generic progress notes such as "Weighing lead time against reliability".
+These notes are fixed texts shown on a timer, not the model's reasoning. The last
+event carries the same `{"compare", "agent"}` payload as `/api/recommend`, and the page
+then renders the agent's chosen supplier, which may differ from the code's #1, with
+its metrics, negotiation points, AI explanation and risks, plus the ranking table,
+exclusions and injection warning. If the stream fails, the page falls back to
+`/api/compare` and shows the computed ranking with a message. Under the
+recommendation, the buyer approves or overrides it (Section 6), and the request id
+links to the full audit record (Section 7).
 
-![The recommendation workspace: code-computed supplier and metrics, AI negotiation points, and the buyer's decision](screenshots/recommendation.png)
+![The recommendation workspace: recommended supplier and metrics, AI negotiation points, and the buyer's decision (captured before the Agent activity panel was added)](screenshots/recommendation.png)
 
 **Request flow: `POST /api/compare`** (no LLM)
 1. `app._parse_compare_body` checks the shape: body is a JSON object, `sku` is a
@@ -89,7 +93,8 @@ request id links to the full audit record (Section 7).
 3. The response is JSON. Errors are `{"error": ...}` with a 4xx/5xx status, and no stack
    trace is ever returned.
 
-**Request flow: `POST /api/recommend`**
+**Request flow: `POST /api/recommend`** (and `POST /api/recommend/stream`, which runs the
+same steps and streams progress events before the same final payload)
 1. It runs the same steps as `/api/compare`, so invalid input fails with 400/404
    **before** any LLM call.
 2. It calls `agent.compare(sku, quotes=<eligible quotes only>, weights=<normalised
@@ -116,7 +121,7 @@ request id links to the full audit record (Section 7).
 | LLM client | `gateway_client.py` | Ollama/OpenAI-compatible gateway calls, retries, token usage |
 | Observability | `observability.py` | Appends the agent's decision record and the buyer's decision to `decisions.jsonl` |
 | Web + API | `app.py`, `templates/index.html`, `static/` | Flask routes, JSON API (incl. `/api/decisions`), decision workspace UI |
-| Evaluation | `eval/cases.py`, `eval/run_eval.py`, `eval/live_eval.py`, `eval/scale_eval.py`, `eval/synthetic.py`, `tests/`, `scripts/` | Golden + adversarial cases, live-LLM eval, synthetic scale eval, 120 pytest tests, live-site checks, GitHub Actions CI |
+| Evaluation | `eval/cases.py`, `eval/run_eval.py`, `eval/live_eval.py`, `eval/scale_eval.py`, `eval/synthetic.py`, `tests/`, `scripts/` | Golden + adversarial cases, live-LLM eval, synthetic scale eval, 122 pytest tests, live-site checks, GitHub Actions CI |
 | Deployment | `deploy/` | Lightsail setup: gunicorn, nginx (with rate limits), systemd |
 
 ## 3. Data model and mock-data assumptions
@@ -288,7 +293,9 @@ tool-call protocol**:
 
    Rules:
    - `recommended_supplier_id` must be one of the compared suppliers (a supplier *name*
-     is mapped to its id first) and must not be security-flagged.
+     is mapped to its id first) and must not be security-flagged. The chosen
+     supplier's raw description is also re-checked with the detector at this point, as a
+     second guard.
    - `rationale` must be a non-empty string.
    - `negotiation_points` must be a list of strings with at least 1 item.
    - `risks` must be a list of strings.
@@ -362,11 +369,13 @@ case-insensitive regexes:
 Matches are surfaced in `injection_suppliers`, in `injection_details` (the snippets are
 shown in the UI) and in the decision log.
 
-**Detection is not the main defence.** Even an injection that the regexes miss cannot
-change the result. The ranking is computed in code from numeric fields only, and
-`product_description` is never scored. Output validation also refuses to recommend any
-supplier the security scan flagged, so an injection cannot steer the final choice even
-when the model is otherwise free to pick.
+**Detection is not the only defence.** Injected text cannot change a score: the
+ranking is computed in code from numeric fields only, and `product_description` is
+never scored. A *flagged* supplier can never be recommended, because output validation
+rejects it. For an injection the regexes *miss*, nothing is flagged, and the model is
+free to pick. The remaining layers are `<supplier_data>` isolation and the hardened
+prompt. The live-LLM evaluation (Section 7) tests exactly this case: with the detector
+switched off entirely, the model never recommended the injecting supplier (3/3).
 
 **Output validation (#5.4).** This is the schema and rule check described in Section 5,
 with one repair attempt and then a deterministic fallback, so the UI never shows an
@@ -378,8 +387,8 @@ browser.
 - Strict input validation (400/404/405).
 - A uniform JSON error shape, and stack traces are never returned.
 - nginx `client_max_body_size 64k`.
-- **Rate limits** (nginx): the LLM endpoints (`POST /api/recommend` and the legacy
-  `POST /` form) allow 6 requests per minute per IP (bursts of 4) and 30 per minute
+- **Rate limits** (nginx): the LLM endpoints (`POST /api/recommend`,
+  `POST /api/recommend/stream` and the legacy `POST /` form) allow 6 requests per minute per IP (bursts of 4) and 30 per minute
   site-wide; other `/api/` routes allow 10 per second per IP. Over the limit, the
   response is 429 with `Retry-After: 60`. This keeps a public site from draining the
   team's shared gateway.
@@ -388,7 +397,7 @@ browser.
 
 ## 7. Observability and evaluation
 
-**Decision log (#6.A).** Every `agent.compare` call (the page and `/api/recommend`)
+**Decision log (#6.A).** Every `agent.compare` call (the page, `/api/recommend` and its stream)
 appends one JSON line to `decisions.jsonl` (git-ignored) with these fields:
 `timestamp` (UTC), `request_id`, `inputs` {sku, num_quotes, weights, quantity, supplier_ids},
 `tool_calls` (each with args and any scope error), `scores` {supplier_id: score},
@@ -421,8 +430,8 @@ offline.
 Result on the current code: **7/7 passed (100%)**. There is also 1 optional live-LLM
 case (`llm_narration_validates_supplier`), which is skipped when no gateway key is set.
 
-**Unit and API tests**, `pytest`: **120 passed** (test_api 43, test_compare 30,
-test_agent 28, test_scale 9, test_live_eval 4, test_scoring 6). `tests/conftest.py` forces offline mode and redirects
+**Unit and API tests**, `pytest`: **122 passed** (test_api 43, test_compare 30,
+test_agent 29, test_scale 9, test_live_eval 5, test_scoring 6). `tests/conftest.py` forces offline mode and redirects
 the decision log, so tests never spend tokens. The agent tests replace the gateway with
 scripted replies and cover:
 - the golden path and the tool-call-then-answer path
@@ -462,14 +471,15 @@ and every request to the gateway is intercepted:
 
 | Mode | Cases | Result |
 |---|---|---|
-| Defended (normal pipeline) | 4 golden, 3 adversarial, real BRK-100 data | **8/8 passed**: LLM answer validated, recommends the code's #1, never an injector, **no flagged text sent to the model** |
-| Detector bypassed | the 3 adversarial cases with the injection detector switched off, so the raw injected text reaches the model | **3/3 final results safe**; the model's **first answer resisted the raw injection 3/3** |
+| Defended (normal pipeline) | 4 golden, 3 adversarial, real BRK-100 data | **8/8 passed**: LLM answer validated, a compared supplier, never an injector, injectors flagged, **no flagged text sent to the model**. The agent's own pick matched the code's #1 in 8/8. |
+| Detector bypassed | the 3 adversarial cases with both detector layers switched off, so the raw injected text reaches the model and nothing is flagged | **3/3: the model never recommended the injector**, and its **first answer resisted the raw injection 3/3**. Here validation cannot block the injector, so this is the model alone. |
 
-The bypass run tests the layers behind the detector on their own: the hardened prompt
-and `<supplier_data>` isolation (the model did not follow the injection), and output
-validation (which would have forced the code's #1 if it had). The run used 14 LLM calls
-(about 104k tokens); 3 cases needed one repair because the model cited numbers it had
-computed itself (38, 11.2, 60), which the numeric grounding rejected.
+The run was repeated after the agent was given free choice. The bypass mode is then the
+hardest test: with the detector off, no supplier is flagged, and output validation no
+longer forces any particular pick. The only thing between the injection and the final
+recommendation is `<supplier_data>` isolation and the hardened prompt. The run used 14
+LLM calls (about 121k tokens). Three cases needed one repair, because the model cited
+numbers it had computed itself (0.20, 12, 60); the numeric grounding rejected them.
 
 **Scale evaluation** (`python eval/scale_eval.py`, report in
 `eval/results/scale_eval.md`). The demo data has at most 8 quotes per SKU, so
@@ -480,9 +490,9 @@ pools:
 
 | Suppliers | `compare_quotes` (median) | First LLM request (max) | Every check |
 |---|---|---|---|
-| 5 | 0.08 ms | 4.6 KB | 10/10 |
-| 50 | 0.5 ms | 5.7 KB | 10/10 |
-| 200 | 2.1 ms | 5.6 KB | 10/10 |
+| 5 | 0.14 ms | 4.8 KB | 10/10 |
+| 50 | 1.1 ms | 5.9 KB | 10/10 |
+| 200 | 4.3 ms | 5.8 KB | 10/10 |
 
 The checks are:
 - the ranking equals an independent re-implementation of the Section 4 formula;
@@ -491,11 +501,11 @@ The checks are:
 - planted injections are flagged exactly;
 - the first request leaves 2 KB of the 8 KiB limit for a repair turn.
 
-A live run on a 50-supplier pool returned `source="llm"`, validated, recommending the
-code's #1. Before the prompt cap, the same pool produced a 13.9 KB request and fell
-back without calling the LLM.
+A live run on a 50-supplier pool returned `source="llm"` and was validated; the agent's
+pick matched the code's #1 and was not an injector. Before the prompt cap, the same
+pool produced a 13.9 KB request and fell back without calling the LLM.
 
-**Live LLM check.** With the real gateway and default weights, all 5 SKUs returned
+**Live LLM check** (before the free-choice change). With the real gateway and default weights, all 5 SKUs returned
 `source="llm"` and `validated=true`. Four needed 1 LLM call. For CBL-300 the first
 answer contained a number the model had computed itself (0.141); validation rejected
 it, the repair turn fixed it, and the second answer passed. BRK-100 now asks for a
@@ -527,6 +537,7 @@ The full contract, with real examples, is in [`docs/API.md`](API.md).
 | GET | `/api/quotes?sku=` | Raw quotes for one SKU | no |
 | POST | `/api/compare` | Ranking, exclusions, best-in-class, levers, injection flags | no |
 | POST | `/api/recommend` | `compare` plus the agent's validated recommendation | yes, if a key is set |
+| POST | `/api/recommend/stream` | Same as `/api/recommend`, streamed as NDJSON progress events (used by the page) | yes, if a key is set |
 | POST | `/api/decisions` | Record the buyer's approve / override of a recommendation | no |
 | GET | `/api/decisions/<request_id>` | Read-only audit record: agent record + buyer decision | no |
 
@@ -550,10 +561,7 @@ records a decision.
 - **Single SKU per comparison.** Real sourcing events are often multi-SKU baskets with
   bundle pricing, split awards and supplier capacity limits.
 - **Scoring model.** Min-max scores are relative to the candidate set and sensitive to
-- **Scoring model.** Min-max scores are relative to the candidate set and sensitive to
-  outliers. Early-payment discounts and volume price breaks are not modelled. Agent
-  levers are computed without the order quantity, so the MOQ lever appears only in
-  `/api/compare`.
+  outliers. Early-payment discounts and volume price breaks are not modelled.
 - **Validation depth.** The validator enforces that the recommended supplier is a
   compared, non-flagged supplier, plus the schema, known supplier ids, and that every
   number is grounded in the data. It checks the meaning of a number only for the price
@@ -585,8 +593,10 @@ The figures below are **illustrative assumptions, not measured results**.
   cheapest" or "30 more days of payment terms". If acting on those levers improved
   terms by even 1–2% of spend on a category (an assumption), the saving would scale
   with annual spend. Longer payment terms also free working capital.
-- **Safer AI adoption.** The LLM adds explanation without taking decision authority,
-  and supplier-written text cannot manipulate the outcome.
+- **Safer AI adoption.** The LLM recommends within limits enforced in code: a compared,
+  non-flagged supplier, with numbers taken from the data. It never buys: a human
+  approves or overrides every recommendation, and supplier-written text cannot change a
+  score.
 
 ## Team and roles
 

@@ -88,22 +88,28 @@ def _levers_for(quote: Mapping, best: Mapping[str, Dict],
     levers: List[Dict] = []
     currency = quote.get("currency") or "SGD"
 
-    def add(dim: str, gap: float, unit: str, bench: Optional[Mapping], text: str) -> None:
+    def add(dim: str, gap: float, unit: str, bench: Optional[Mapping], text: str,
+            **extra) -> None:
         levers.append({
             "dimension": dim,
             "gap": gap,
             "unit": unit,
             "benchmark_supplier_id": bench["supplier_id"] if bench else None,
             "text": text,
+            **extra,
         })
 
     b = best["price"]
     # A zero benchmark price has no meaningful percentage gap; skip the lever.
     gap = round((quote["unit_price"] - b["value"]) / b["value"] * 100, 1) if b["value"] > 0 else 0
     if gap > 0:
+        # "x% above" is not the cut needed to match: 12.50 -> 10.90 is 14.7% above
+        # but a 12.8% cut. State both so the LLM never confuses them.
+        cut = round((quote["unit_price"] - b["value"]) / quote["unit_price"] * 100, 1)
         add("price", gap, "%", b,
             f"Price is {gap:.1f}% above {b['supplier']} ({currency} {b['value']:.2f})"
-            " — ask for a price match")
+            f" — ask for a price match (a {cut:.1f}% cut)",
+            cut_pct=cut)
 
     b = best["lead_time"]
     gap_days = quote["lead_time_days"] - b["value"]

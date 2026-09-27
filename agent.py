@@ -37,8 +37,17 @@ MAX_REPAIRS = 1
 DESCRIPTION_MAX_CHARS = 300
 REDACTED = "[REDACTED: instruction-like text detected by the security scan]"
 _SUPPLIER_ID_RE = re.compile(r"\bSUP-\d+\b")
+# Numbers in model text. Identifiers like SUP-001 / BRK-100 are removed first.
+_NUMBER_RE = re.compile(r"(?<![\w.])\d+(?:,\d{3})*(?:\.\d+)?")
+_IDENTIFIER_RE = re.compile(r"\b[A-Z]{2,}-\d+\b")
+# Small integers (ranks, counts such as "top 3") are always allowed.
+_ALWAYS_ALLOWED_MAX = 10
+# Words that turn a percentage into "cut the price by x%".
+_CUT_WORDS_RE = re.compile(r"reduc|cut|discount|lower|decrease|drop", re.IGNORECASE)
 # Bytes the gateway payload adds around the messages (model id, options).
 _PAYLOAD_OVERHEAD = 200
+# A reply with no JSON is kept in the history only up to this many characters.
+_HISTORY_REPLY_MAX_CHARS = 1200
 
 # Final-answer format. Sent in the user message because the gateway may drop
 # or override the system prompt.
@@ -89,8 +98,50 @@ def extract_tool_call(text: str) -> Optional[Dict]:
     return None
 
 
-def validate_answer(obj: Optional[Dict], ranked: List[Dict]) -> Tuple[Optional[Dict], List[str]]:
+def _numbers(text: str) -> List[str]:
+    """Numeric tokens in ``text`` as written (identifiers like SUP-001 excluded)."""
+    return _NUMBER_RE.findall(_IDENTIFIER_RE.sub(" ", text or ""))
+
+
+def _to_float(token: str) -> float:
+    return float(token.replace(",", ""))
+
+
+def _is_grounded(token: str, facts: List[float]) -> bool:
+    """True if ``token`` equals some fact, rounded to the precision it is written in.
+
+    "0.70" matches a fact 0.6998, "97" matches 97 or 0.97 (percent), "12.8"
+    matches 12.8. A fact in [0, 1] also counts as a percentage (x100).
+    """
+    value = _to_float(token)
+    if value.is_integer() and value <= _ALWAYS_ALLOWED_MAX:
+        return True
+    decimals = len(token.split(".")[1]) if "." in token else 0
+    tolerance = 0.5 * 10 ** -decimals + 1e-9
+    for fact in facts:
+        candidates = (fact, fact * 100) if 0 <= fact <= 1 else (fact,)
+        if any(abs(value - c) <= tolerance for c in candidates):
+            return True
+    return False
+
+
+def facts_from_prompt(prompt: str) -> List[float]:
+    """Every number the model was given (ranking, levers, weights, descriptions)."""
+    return [_to_float(t) for t in _numbers(prompt)]
+
+
+def validate_answer(obj: Optional[Dict], ranked: List[Dict],
+                    facts: Optional[List[float]] = None,
+                    levers: Optional[List[Dict]] = None) -> Tuple[Optional[Dict], List[str]]:
     """Output validation (#5.4) for the model's final JSON.
+
+    Besides the schema and the #1 supplier, two numeric checks run when
+    ``facts`` / ``levers`` are given:
+
+    * grounding: every number in the text must appear in ``facts`` (the
+      numbers the model was shown), so it cannot invent or recompute figures;
+    * price cut: "reduce the price by x%" must use the lever's ``cut_pct``,
+      not the "x% above" gap.
 
     Returns ``(recommendation, [])`` on success or ``(None, errors)``.
     """
@@ -132,6 +183,26 @@ def validate_answer(obj: Optional[Dict], ranked: List[Dict]) -> Tuple[Optional[D
     unknown = sorted(mentioned - known_ids)
     if unknown:
         errors.append(f"mentions supplier ids that are not in the comparison: {unknown}")
+
+    if facts is not None:
+        text = " ".join([rationale] + points + risks)
+        ungrounded = sorted({t for t in _numbers(text) if not _is_grounded(t, facts)},
+                            key=_to_float)
+        if ungrounded:
+            errors.append(
+                f"uses numbers that are not in the data you were given: {ungrounded}. "
+                "Copy figures exactly from the ranking and levers; do not compute new ones")
+
+    for entry in levers or []:
+        for lever in entry["levers"]:
+            if lever["dimension"] != "price" or "cut_pct" not in lever:
+                continue
+            above, cut = f"{lever['gap']:.1f}", f"{lever['cut_pct']:.1f}"
+            for point in points:
+                if _CUT_WORDS_RE.search(point) and re.search(rf"(?<![\d.]){re.escape(above)}\s*%", point):
+                    errors.append(
+                        f"{entry['supplier_id']}'s price is {above}% above the benchmark, but the "
+                        f"price cut needed to match it is {cut}%; do not call {above}% a reduction")
 
     if errors:
         return None, errors
@@ -206,6 +277,19 @@ def _build_user_prompt(sku: str, ranked: List[Dict], quotes: List[Dict],
 # Tool-call loop
 # --------------------------------------------------------------------------- #
 
+def _history_entry(reply: str) -> str:
+    """What to keep of a model reply in the conversation history.
+
+    Only the JSON object matters to the next turn; the prose around it can be
+    several KiB and would push a repair or tool follow-up over the gateway's
+    8 KiB WAF limit, so it is dropped.
+    """
+    obj = extract_json(reply)
+    if obj is not None:
+        return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+    return reply[:_HISTORY_REPLY_MAX_CHARS]
+
+
 def _run_tool(call: Dict, sku: str, quotes: List[Dict], flagged: Dict[str, List[str]]) -> Tuple[Dict, str]:
     """Execute one tool request under least privilege.
 
@@ -241,8 +325,11 @@ def _run_tool(call: Dict, sku: str, quotes: List[Dict], flagged: Dict[str, List[
 
 
 def _run_agent_loop(system_prompt: str, user_prompt: str, sku: str, quotes: List[Dict],
-                    ranked: List[Dict], flagged: Dict[str, List[str]], trace: Dict) -> Optional[Dict]:
+                    ranked: List[Dict], flagged: Dict[str, List[str]], trace: Dict,
+                    levers: Optional[List[Dict]] = None) -> Optional[Dict]:
     """Run the manual JSON tool-call loop; return a validated recommendation or None."""
+    # Numbers the model may cite: everything in the prompt, plus tool results.
+    facts = facts_from_prompt(user_prompt)
     messages: List[Dict[str, str]] = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
@@ -258,16 +345,17 @@ def _run_agent_loop(system_prompt: str, user_prompt: str, sku: str, quotes: List
         trace["usage"]["llm_calls"] += 1
         for key in ("input_tokens", "output_tokens"):
             trace["usage"][key] += int(usage.get(key) or 0)
-        messages.append({"role": "assistant", "content": reply})
+        messages.append({"role": "assistant", "content": _history_entry(reply)})
 
         call = extract_tool_call(reply)
         if call:
             record, result_text = _run_tool(call, sku, quotes, flagged)
             trace["tool_calls"].append(record)
             messages.append({"role": "user", "content": result_text})
+            facts.extend(facts_from_prompt(result_text))
             continue
 
-        recommendation, errors = validate_answer(extract_json(reply), ranked)
+        recommendation, errors = validate_answer(extract_json(reply), ranked, facts, levers)
         if recommendation:
             return recommendation
         trace["errors"].append("invalid answer: " + "; ".join(errors))
@@ -405,7 +493,7 @@ def compare(sku: str, quotes: Optional[List[Dict]] = None,
         user_prompt = _build_user_prompt(sku, ranked, quotes, levers, flagged, weights)
         try:
             recommendation = _run_agent_loop(security.build_system_prompt(), user_prompt,
-                                             sku, quotes, ranked, flagged, trace)
+                                             sku, quotes, ranked, flagged, trace, levers)
         except (gateway_client.GatewayError, EnvironmentError) as exc:
             trace["errors"].append(f"gateway: {exc}")
         source = "llm" if recommendation else "fallback"

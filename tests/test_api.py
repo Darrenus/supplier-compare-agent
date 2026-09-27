@@ -386,3 +386,31 @@ def test_concurrent_decisions_record_exactly_one(client):
         t.join()
     assert sorted(results, key=str) == [409] * 7 + ["ok"]
     assert sum(r.get("type") == "human_decision" for r in observability.read_records(rid)) == 1
+
+
+# ---- GET /api/decisions/<request_id> (audit record) ------------------------ #
+
+def test_audit_record_shows_agent_record_then_the_human_decision(client):
+    agent_out = _recommend(client)
+    rid, top = agent_out["request_id"], agent_out["recommendation"]["recommended_supplier_id"]
+    resp = client.get(f"/api/decisions/{rid}")
+    assert resp.status_code == 200 and resp.mimetype == "application/json"
+    body = resp.get_json()
+    assert body["request_id"] == rid and body["human_decision"] is None
+    assert body["agent"]["recommended_supplier_id"] == top
+    assert set(body["agent"]) >= {"inputs", "scores", "tool_calls", "rationale", "usage", "errors"}
+    assert b'\n  "agent"' in resp.data          # pretty-printed for a browser
+
+    _decide(client, request_id=rid, action="approve", supplier_id=top)
+    decided = client.get(f"/api/decisions/{rid}").get_json()
+    assert decided["human_decision"]["action"] == "approve"
+    assert decided["human_decision"]["order_placed"] is False
+
+
+def test_audit_record_errors(client):
+    assert client.get("/api/decisions/req-00000000").status_code == 404
+    for bad in ["nope", "req-XYZ", "req-123456789", "..%2F..%2Fetc"]:
+        resp = client.get(f"/api/decisions/{bad}")
+        assert resp.status_code in (400, 404)
+        assert "error" in resp.get_json()
+    assert client.get("/api/decisions/req-zzzzzzzz").status_code == 400

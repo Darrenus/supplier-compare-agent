@@ -13,6 +13,7 @@ JSON API (contract in ``docs/API.md``):
     GET  /api/quotes     raw quotes for one SKU (``?sku=``)
     POST /api/compare    deterministic comparison (``compare.compare_quotes``)
     POST /api/recommend  comparison + LLM narration (``agent.compare``)
+    GET  /api/decisions/<request_id>  the audit record: agent + buyer decision
     POST /api/decisions  the buyer approves or overrides a recommendation
                          (appended to the decision log; nothing is ordered)
 Every ``/api/*`` error is ``{"error": "<message>"}`` with a 4xx/5xx status; no
@@ -20,6 +21,7 @@ stack traces are returned.
 """
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, Optional, Tuple
 
 from flask import Flask, jsonify, render_template, request
@@ -191,6 +193,23 @@ def api_recommend():
             details[sid] = security.find_injections(descriptions.get(sid, ""))
     agent_result["injection_details"] = details
     return jsonify({"compare": result, "agent": agent_result})
+
+
+@app.get("/api/decisions/<request_id>")
+def api_decision_record(request_id: str):
+    """Read-only audit record for one request (Rubric #6.A).
+
+    Everything the decision log holds for ``request_id``: the agent's record
+    (inputs, scores, tool calls, rationale, token usage, errors) and the
+    buyer's decision, if any. Pretty-printed so it reads well in a browser.
+    """
+    if not observability.REQUEST_ID_RE.match(request_id):
+        return _error("request_id must look like 'req-' followed by 8 hex characters", 400)
+    record = observability.audit_record(request_id)
+    if record is None:
+        return _error(f"unknown request_id {request_id!r}", 404)
+    return app.response_class(json.dumps(record, indent=2, ensure_ascii=False) + "\n",
+                              mimetype="application/json")
 
 
 @app.post("/api/decisions")

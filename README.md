@@ -60,7 +60,8 @@ Agent from the command line: `python agent.py BRK-100 [--weights price=0.6] [--j
   as instructions; `detect_injection()` flags known attacks; tools are
   read-only (`tools.py`); the model's output is validated against the input set.
 - **#6 Observability / eval** — every decision is logged as a JSON line in
-  `decisions.jsonl`; `eval/` holds golden and adversarial cases with a runner.
+  `decisions.jsonl`, and `GET /api/decisions/<request_id>` (linked from the request
+  id on the page) shows a request's full audit record, agent and buyer decision; `eval/` holds golden and adversarial cases with a runner.
 
 ## Setup
 

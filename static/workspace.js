@@ -149,6 +149,8 @@
     return node;
   }
   function sourceBadge(source,errors){const rejected=(errors || []).some(e=>e.startsWith('invalid answer'));return el('span',{class:'badge'},({llm:'AI-generated explanation',offline:'Rule-based explanation',fallback:rejected?'AI answer failed validation · rule-based explanation':'AI unavailable · rule-based explanation'})[source] || 'Computed ranking');}
+  // The request id opens its full audit record (agent + buyer decision) as JSON.
+  function auditLink(requestId,label){return el('a',{href:'/api/decisions/'+encodeURIComponent(requestId),target:'_blank',rel:'noopener',title:'Open the audit record for this request'},label || requestId);}
   function renderRecommendation(compare,agent,pending){
     const top=compare.ranked[0];
     if(!top)return el('section',{class:'empty-state'},el('span',{class:'empty-mark'},'∅'),el('h2',{},'No matching suppliers'),el('p',{},'Try increasing the order quantity or allowing a longer lead time.'));
@@ -160,7 +162,7 @@
       el('p',{},rec?.rationale || 'The highest weighted score among eligible suppliers, calculated from your selected priorities.'),
       points.length>2?el('div',{},el('h3',{},'More negotiation opportunities'),el('ul',{},points.slice(2).map(p=>el('li',{},p)))):null,
       rec?.risks?.length?el('div',{},el('h3',{},'Risks to consider'),el('ul',{},rec.risks.map(r=>el('li',{},r)))):null,
-      agent?el('div',{class:'meta'},`Request ${agent.request_id} · LLM calls ${agent.usage?.llm_calls ?? 0} · Tokens ${agent.usage?.input_tokens ?? 0} in / ${agent.usage?.output_tokens ?? 0} out`):null);
+      agent?el('div',{class:'meta'},'Request ',auditLink(agent.request_id),` · LLM calls ${agent.usage?.llm_calls ?? 0} · Tokens ${agent.usage?.input_tokens ?? 0} in / ${agent.usage?.output_tokens ?? 0} out`):null);
     return el('section',{class:'rec'},
       el('div',{class:'rec-heading'},el('div',{},el('p',{class:'eyebrow'},'★  Recommended supplier'),el('h2',{class:'who'},top.supplier),el('p',{class:'rec-subtitle'},'Highest weighted score across your priorities.')),
         el('div',{class:'hero-score'},el('strong',{},top.score.toFixed(3)),el('span',{},'Weighted score'))),
@@ -196,7 +198,8 @@
         box.replaceChildren(...[el("div", { class: "done" },
           d.action === "approve" ? `✓ Approved: ${who}` : `✓ Override recorded: ${who} instead of ${rec.recommended_supplier}`),
           d.reason ? el("div", { class: "small" }, "Reason: ", d.reason) : null,
-          el("div", { class: "muted small" }, `Logged at ${when} with request ${d.request_id}. No order was placed.`)]
+          el("div", { class: "muted small" }, `Logged at ${when} with request ${d.request_id}. No order was placed. `,
+            auditLink(d.request_id, "View audit record ↗"))]
           .filter(Boolean));
       } catch (err) {
         msg.className = "small err"; msg.textContent = "Not recorded: " + err.message;

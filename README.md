@@ -91,6 +91,18 @@ Evaluation (golden + adversarial cases):
 python eval/run_eval.py
 ```
 
+Live-LLM evaluation (needs the gateway key; about 14 LLM calls). It runs every case
+through the real agent, checks that no flagged text reaches the model, and repeats
+the adversarial cases with the injection detector switched off to test the model
+and output validation on their own. The latest report is in
+[`eval/results/live_eval.md`](eval/results/live_eval.md): 8/8 defended cases
+passed, and with the detector bypassed the model's first answer resisted the raw
+injection 3/3.
+
+```bash
+python eval/live_eval.py
+```
+
 Unit tests:
 
 ```bash

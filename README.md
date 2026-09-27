@@ -1,5 +1,7 @@
 # Supplier Comparison Agent
 
+[![CI](https://github.com/Darrenus/supplier-compare-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Darrenus/supplier-compare-agent/actions/workflows/ci.yml)
+
 An AI agent that compares suppliers for a given SKU and recommends the Top 3 —
 objectively, safely, and auditably. Built for the NUS-ISS "Show Me Your Agent"
 hackathon by team **Show Me Your Token** (Public track, Team Code `DAG1YLPM`).

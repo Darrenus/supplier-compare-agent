@@ -106,7 +106,7 @@ recommendation, the buyer approves it or overrides it (Section 6).
 | LLM client | `gateway_client.py` | Ollama/OpenAI-compatible gateway calls, retries, token usage |
 | Observability | `observability.py` | Appends the agent's decision record and the buyer's decision to `decisions.jsonl` |
 | Web + API | `app.py`, `templates/index.html` | Flask routes, JSON API (incl. `/api/decisions`), interactive page |
-| Evaluation | `eval/cases.py`, `eval/run_eval.py`, `tests/`, `scripts/` | Golden + adversarial cases, 104 pytest tests, live-site checks, GitHub Actions CI |
+| Evaluation | `eval/cases.py`, `eval/run_eval.py`, `tests/`, `scripts/` | Golden + adversarial cases, 105 pytest tests, live-site checks, GitHub Actions CI |
 | Deployment | `deploy/` | Lightsail setup: gunicorn, nginx (with rate limits), systemd |
 
 ## 3. Data model and mock-data assumptions
@@ -273,8 +273,9 @@ tool-call protocol**:
      Rounding (0.70 for 0.6998) and percent forms (97% for 0.97) are accepted, small
      integers up to 10 are always allowed, and ids such as `SUP-001` are ignored. The
      model therefore cannot invent or recompute figures.
-   - **Price cut:** a point that asks to reduce, cut or discount the price by x% must
-     use the lever's `cut_pct`, not the "x% above" gap.
+   - **Price cut:** a point that asks to reduce, cut or discount the price and cites the
+     "x% above" gap must also state the lever's `cut_pct`; "reduction of 14.7%" alone is
+     rejected, "a 12.8% cut to close the 14.7% gap" passes.
 
    On failure the errors are sent back **once** (`MAX_REPAIRS = 1`). Only the JSON of
    each model reply is kept in the conversation history: a verbose reply (about 5 KB of
@@ -389,8 +390,8 @@ offline.
 Result on the current code: **7/7 passed (100%)**. There is also 1 optional live-LLM
 case (`llm_narration_validates_supplier`), which is skipped when no gateway key is set.
 
-**Unit and API tests**, `pytest`: **104 passed** (test_api 41, test_compare 30,
-test_agent 27, test_scoring 6). `tests/conftest.py` forces offline mode and redirects
+**Unit and API tests**, `pytest`: **105 passed** (test_api 41, test_compare 30,
+test_agent 28, test_scoring 6). `tests/conftest.py` forces offline mode and redirects
 the decision log, so tests never spend tokens. The agent tests replace the gateway with
 scripted replies and cover:
 - the golden path and the tool-call-then-answer path
@@ -406,6 +407,8 @@ scripted replies and cover:
 - numeric grounding: the exact live answer with "reduction of 14.7%" is rejected and
   repaired to 12.8%, invented numbers fall back, and rounding and percent forms pass
 - a verbose reply still leaving the repair request under 8 KiB
+- a correct point that cites both the gap and the cut ("14.7% above … a 12.8% cut")
+  being accepted, not flagged
 
 The API tests also cover `/api/decisions`: approve and override rules, 404 and 409,
 the append-only trail, and 8 concurrent submissions recording exactly one decision.

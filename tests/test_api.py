@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import agent  # noqa: E402
 import app as app_module  # noqa: E402
 import gateway_client  # noqa: E402
+import observability  # noqa: E402
 import tools  # noqa: E402
 from app import app  # noqa: E402
 from mock_data import SKUS  # noqa: E402
@@ -299,3 +300,89 @@ def test_recommend_injection_details_cover_excluded_quotes(client):
     assert sorted(details) == flagged
     assert any("Ignore previous" in s for s in details["SUP-004"])
     assert any("忽略之前的指令" in s for s in details["SUP-007"])
+
+
+# ---- /api/decisions (human-in-the-loop) ------------------------------------ #
+
+def _recommend(client, **body):
+    resp = client.post("/api/recommend", json={"sku": "BRK-100", **body})
+    assert resp.status_code == 200
+    return resp.get_json()["agent"]
+
+
+def _decide(client, **body):
+    return client.post("/api/decisions", json=body)
+
+
+def test_decision_approve_is_logged_next_to_the_agent_record(client):
+    agent_out = _recommend(client)
+    rid, top = agent_out["request_id"], agent_out["recommendation"]["recommended_supplier_id"]
+    resp = _decide(client, request_id=rid, action="approve", supplier_id=top)
+    assert resp.status_code == 201
+    decision = resp.get_json()["decision"]
+    assert decision["agrees_with_agent"] is True and decision["order_placed"] is False
+    records = observability.read_records(rid)
+    assert [r.get("type") for r in records] == [None, "human_decision"]
+    assert records[1]["supplier_id"] == top
+
+
+def test_decision_override_needs_a_compared_supplier_and_a_reason(client):
+    agent_out = _recommend(client)
+    rid = agent_out["request_id"]
+    other = agent_out["scores"][1]["supplier_id"]
+    assert _decide(client, request_id=rid, action="override", supplier_id=other).status_code == 400
+    assert _decide(client, request_id=rid, action="override", supplier_id="SUP-999",
+                   reason="cheaper overall").status_code == 400
+    resp = _decide(client, request_id=rid, action="override", supplier_id=other,
+                   reason="Existing framework contract with this supplier")
+    assert resp.status_code == 201
+    assert resp.get_json()["decision"]["agrees_with_agent"] is False
+
+
+def test_decision_rules(client):
+    agent_out = _recommend(client)
+    rid, top = agent_out["request_id"], agent_out["recommendation"]["recommended_supplier_id"]
+    other = agent_out["scores"][1]["supplier_id"]
+    # approve must name the recommended supplier
+    assert _decide(client, request_id=rid, action="approve", supplier_id=other).status_code == 400
+    # overriding with the recommended supplier is an approve
+    assert _decide(client, request_id=rid, action="override", supplier_id=top,
+                   reason="just because").status_code == 400
+    assert _decide(client, request_id=rid, action="order", supplier_id=top).status_code == 400
+    assert _decide(client, request_id="req-nope", action="approve", supplier_id=top).status_code == 404
+    assert _decide(client, action="approve", supplier_id=top).status_code == 400
+    assert client.post("/api/decisions", data="x").status_code == 400
+    # decided once; the audit trail is append-only
+    assert _decide(client, request_id=rid, action="approve", supplier_id=top).status_code == 201
+    again = _decide(client, request_id=rid, action="approve", supplier_id=top)
+    assert again.status_code == 409 and "already has a decision" in again.get_json()["error"]
+
+
+def test_decision_on_request_without_eligible_supplier_is_409(client):
+    agent_out = _recommend(client, max_lead_time_days=1)
+    assert agent_out["recommendation"] is None
+    resp = _decide(client, request_id=agent_out["request_id"], action="approve", supplier_id="SUP-001")
+    assert resp.status_code == 409
+
+
+def test_concurrent_decisions_record_exactly_one(client):
+    import threading
+    agent_out = _recommend(client)
+    rid, top = agent_out["request_id"], agent_out["recommendation"]["recommended_supplier_id"]
+    results, barrier = [], threading.Barrier(8)
+
+    def worker():
+        barrier.wait()
+        try:
+            observability.record_human_decision(rid, "approve", top)
+            results.append("ok")
+        except observability.DecisionError as exc:
+            results.append(exc.status)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(results, key=str) == [409] * 7 + ["ok"]
+    assert sum(r.get("type") == "human_decision" for r in observability.read_records(rid)) == 1

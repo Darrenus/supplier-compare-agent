@@ -248,3 +248,91 @@ def test_tool_follow_up_still_fits_waf_limit(gateway):
     agent.compare(SKU)
     body = json.dumps({"model": "x" * 50, "messages": fake.requests[-1]}, ensure_ascii=False)
     assert len(body.encode("utf-8")) < gateway_client.WAF_BODY_LIMIT
+
+
+# ---- numeric validation of the model's text -------------------------------- #
+
+# The answer Claude gave on the live site for BRK-100 (default weights). Every
+# number is copied from the prompt, but "reduction of 14.7%" misuses the
+# "14.7% above" gap: the cut needed to match SGD 10.90 is 12.8%.
+LIVE_RATIONALE = (
+    "SUP-001 Acme Precision Parts ranks first with an objective score of 0.700, driven by "
+    "its excellent on-time delivery rate (97%), high quality rating (4.6/5), and reasonable "
+    "lead time (14 days). While SUP-005 Pacific Rim Trading offers a slightly lower price "
+    "(SGD 12.10 vs 12.50), SUP-001's superior quality and reliability justify the premium. "
+    "SUP-006 Harbourfront Engineering has the fastest lead time (5 days) but scores lower "
+    "overall due to significantly higher pricing (SGD 13.90).")
+LIVE_POINTS = [
+    "Request price reduction of 14.7% to match Meridian Industrial Supply's SGD 10.90/unit",
+    "Ask for expedited delivery slots to close the 9-day lead time gap with Harbourfront",
+    "Negotiate payment terms extension from Net 30 to Net 60",
+]
+LIVE_RISKS = ["SUP-004 and SUP-007 showed instruction-like text; SUP-001's MOQ of 500 units "
+              "may require inventory planning"]
+
+
+def test_price_lever_states_the_cut_needed():
+    levers = agent._compute_levers(tools.get_quotes(SKU), score_suppliers(tools.get_quotes(SKU)))
+    price = next(lv for lv in levers[0]["levers"] if lv["dimension"] == "price")
+    assert (price["gap"], price["cut_pct"]) == (14.7, 12.8)
+    assert "(a 12.8% cut)" in price["text"]
+
+
+def test_live_answer_with_wrong_cut_is_repaired(gateway):
+    fixed = [LIVE_POINTS[0].replace("14.7%", "12.8%")] + LIVE_POINTS[1:]
+    fake = gateway([final("SUP-001", rationale=LIVE_RATIONALE, negotiation_points=LIVE_POINTS,
+                          risks=LIVE_RISKS),
+                    final("SUP-001", rationale=LIVE_RATIONALE, negotiation_points=fixed,
+                          risks=LIVE_RISKS)])
+    result = agent.compare(SKU)
+    assert result["source"] == "llm" and result["validated"] is True
+    assert result["recommendation"]["negotiation_points"][0].startswith("Request price reduction of 12.8%")
+    repair = fake.requests[1][-1]["content"]
+    assert "price cut needed to match it is 12.8%" in repair
+    assert any("do not call 14.7% a reduction" in e for e in result["errors"])
+
+
+def test_invented_numbers_are_rejected_then_fall_back(gateway):
+    made_up = final("SUP-001", rationale="SUP-001 saves 23.5% versus the average supplier.")
+    gateway([made_up, made_up])
+    result = agent.compare(SKU)
+    assert result["source"] == "fallback" and result["validated"] is False
+    assert any("not in the data you were given: ['23.5']" in e for e in result["errors"])
+
+
+def test_grounding_accepts_rounding_and_percent_forms():
+    facts = [0.6998, 0.97, 12.5, 30.0]
+    for ok in ["0.70", "0.7", "97", "12.50", "30", "3"]:
+        assert agent._is_grounded(ok, facts), ok
+    for bad in ["0.69", "96", "12.4", "31", "11"]:
+        assert not agent._is_grounded(bad, facts), bad
+
+
+def test_identifiers_are_not_numbers():
+    assert agent._numbers("SUP-001 beats SUP-004 on BRK-100 by 0.39") == ["0.39"]
+
+
+def test_repair_fits_the_waf_limit_after_a_long_reply(gateway):
+    # A verbose first answer (prose around the JSON) must not push the repair
+    # request over the 8 KiB WAF limit; only the JSON is kept in the history.
+    chatty = ("Let me think about this carefully. " * 150
+              + json.dumps(final("SUP-001", rationale="SUP-001 is 23.5% better.")))
+    fake = gateway([chatty, final("SUP-001")])
+    result = agent.compare(SKU)
+    assert result["source"] == "llm" and result["validated"] is True
+    assert result["usage"]["llm_calls"] == 2
+    second = fake.requests[1]
+    assert "Let me think" not in second[2]["content"]
+    size = len(json.dumps(second, ensure_ascii=False).encode("utf-8")) + agent._PAYLOAD_OVERHEAD
+    assert size <= gateway_client.WAF_BODY_LIMIT
+
+
+def test_price_point_citing_gap_and_correct_cut_is_accepted(gateway):
+    # Copying the lever text ("14.7% above ... a 12.8% cut") is correct and
+    # must not be rejected just because 14.7% sits next to the word "cut".
+    point = ("Price is 14.7% above Meridian Industrial Supply (SGD 10.90) - ask for a price "
+             "match (a 12.8% cut)")
+    gateway([final("SUP-001", negotiation_points=[point])])
+    result = agent.compare(SKU)
+    assert result["source"] == "llm" and result["validated"] is True
+    assert result["errors"] == []

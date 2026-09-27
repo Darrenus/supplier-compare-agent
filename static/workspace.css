@@ -51,3 +51,12 @@ tbody tr:hover{background:color-mix(in srgb,var(--sage) 65%,var(--surface))}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}.generation-sweep{width:100%;opacity:.2}.pending .generation-icon{border-color:var(--accent)}}
 .botanical{mask-image:linear-gradient(to right,transparent,black 48%),linear-gradient(to bottom,transparent,black 18%,black 75%,transparent);mask-composite:intersect}
 @media(max-width:760px){[data-theme=dark] .botanical-dark{opacity:.22}.botanical{mask-image:linear-gradient(to right,transparent,black 75%),linear-gradient(to bottom,transparent,black 20%,black 65%,transparent)}}
+
+/* Buyer decisions use the same theme as the comparison workspace. */
+.decision{margin-top:20px;padding-top:18px;border-top:1px solid var(--line)}
+.decision .row{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px;align-items:center}
+.decision button{padding:10px 14px;border:1px solid var(--accent);border-radius:5px;background:var(--accent);color:var(--accent-text);font:inherit}
+.decision button.secondary{background:var(--surface);color:var(--text);border-color:var(--line)}
+.decision textarea{font:inherit;width:100%;min-height:72px;padding:10px 12px;border:1px solid var(--line);border-radius:5px;background:var(--surface);color:var(--text);resize:vertical}
+.decision .done{color:var(--accent);font-weight:600}
+.decision .err{color:var(--error)}

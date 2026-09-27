@@ -71,7 +71,7 @@
     }
     return node;
   }
-  function sourceBadge(source){return el('span',{class:'badge'},({llm:'AI-generated explanation',offline:'Rule-based explanation',fallback:'AI unavailable · rule-based explanation'})[source] || 'Computed ranking');}
+  function sourceBadge(source,errors){const rejected=(errors || []).some(e=>e.startsWith('invalid answer'));return el('span',{class:'badge'},({llm:'AI-generated explanation',offline:'Rule-based explanation',fallback:rejected?'AI answer failed validation · rule-based explanation':'AI unavailable · rule-based explanation'})[source] || 'Computed ranking');}
   function renderRecommendation(compare,agent,pending){
     const top=compare.ranked[0];
     if(!top)return el('section',{class:'empty-state'},el('span',{class:'empty-mark'},'∅'),el('h2',{},'No matching suppliers'),el('p',{},'Try increasing the order quantity or allowing a longer lead time.'));
@@ -79,7 +79,7 @@
     const leverData=(compare.negotiation_levers || []).find(x=>x.supplier_id===top.supplier_id)?.levers || [];
     const points=rec?.negotiation_points || leverData.map(x=>x.text);
     const metrics=[ [money(top.raw.unit_price),'Unit price'],[`${top.raw.lead_time_days} days`,'Lead time'],[percent(top.raw.on_time_delivery_rate),'On-time delivery'],[`${top.raw.quality_rating} / 5`,'Quality'] ];
-    const explanation=el('details',{class:'explanation'},el('summary',{},'Why this recommendation?',sourceBadge(agent?.source)),
+    const explanation=el('details',{class:'explanation'},el('summary',{},'Why this recommendation?',sourceBadge(agent?.source,agent?.errors)),
       el('p',{},rec?.rationale || 'The highest weighted score among eligible suppliers, calculated from your selected priorities.'),
       points.length>2?el('div',{},el('h3',{},'More negotiation opportunities'),el('ul',{},points.slice(2).map(p=>el('li',{},p)))):null,
       rec?.risks?.length?el('div',{},el('h3',{},'Risks to consider'),el('ul',{},rec.risks.map(r=>el('li',{},r)))):null,
@@ -90,8 +90,67 @@
       el('div',{class:'metrics'},metrics.map(([value,label])=>el('div',{class:'metric'},el('strong',{},value),el('span',{},label)))),
       el('div',{class:'levers-heading'},'◇  Negotiation opportunities'),
       points.length?el('div',{class:'levers'},points.slice(0,2).map(p=>el('div',{class:'lever'},p))):el('p',{class:'small'},'No benchmark gaps identified for this comparison.'),
-      pending?generationState('pending'):agent?generationState(agent.source==='llm'?'complete':'fallback'):null,explanation);
+      pending?generationState('pending'):agent?generationState(agent.source==='llm'?'complete':'fallback'):null,explanation,
+      rec && agent.request_id ? renderDecision(agent,compare.ranked) : null);
   }
+  // Human-in-the-loop: the buyer approves the recommendation or overrides it.
+  // The decision is appended to the audit log next to the agent's record;
+  // nothing is ordered.
+  function renderDecision(agent, ranked) {
+    const rec = agent.recommendation;
+    const box = el("div", { class: "decision" });
+    const msg = el("div", { class: "small" });
+    msg.setAttribute("role", "status");
+    const note = el("div", { class: "muted small" },
+      "Your decision is recorded in the audit log with request ", agent.request_id,
+      ". The agent never places orders.");
+
+    async function send(payload, busy) {
+      busy.forEach(b => { b.disabled = true; });
+      msg.className = "small"; msg.textContent = "Recording…";
+      try {
+        const r = await fetch("/api/decisions", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ request_id: agent.request_id, ...payload }) });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+        const d = data.decision;
+        const who = (ranked.find(x => x.supplier_id === d.supplier_id) || {}).supplier || d.supplier_id;
+        const when = new Date(d.timestamp).toLocaleTimeString();
+        box.replaceChildren(...[el("div", { class: "done" },
+          d.action === "approve" ? `✓ Approved: ${who}` : `✓ Override recorded: ${who} instead of ${rec.recommended_supplier}`),
+          d.reason ? el("div", { class: "small" }, "Reason: ", d.reason) : null,
+          el("div", { class: "muted small" }, `Logged at ${when} with request ${d.request_id}. No order was placed.`)]
+          .filter(Boolean));
+      } catch (err) {
+        msg.className = "small err"; msg.textContent = "Not recorded: " + err.message;
+        busy.forEach(b => { b.disabled = false; });
+      }
+    }
+
+    const approve = el("button", { type: "button" }, `Approve ${rec.recommended_supplier}`);
+    const other = el("button", { type: "button", class: "secondary" }, "Choose a different supplier…");
+    const pick = el("select", {}, ranked.filter(r => r.supplier_id !== rec.recommended_supplier_id)
+      .map(r => el("option", { value: r.supplier_id }, `${r.supplier} (${r.supplier_id}) · score ${r.score.toFixed(3)}`)));
+    pick.setAttribute("aria-label", "Alternative supplier");
+    const reason = el("textarea", { maxLength: 500, placeholder: "Why? (required, e.g. existing framework contract, audit finding)" });
+    reason.setAttribute("aria-label", "Reason for choosing a different supplier");
+    const confirm = el("button", { type: "button" }, "Record override");
+    const overrideForm = el("div", { class: "hidden" },
+      el("div", { class: "row" }, pick), el("div", { class: "row" }, reason), el("div", { class: "row" }, confirm));
+
+    approve.addEventListener("click", () => send({ action: "approve", supplier_id: rec.recommended_supplier_id }, [approve, other, confirm]));
+    other.addEventListener("click", () => { overrideForm.classList.toggle("hidden"); reason.focus(); });
+    reason.addEventListener("input", () => { if (msg.classList.contains("err")) msg.textContent = ""; });
+    confirm.addEventListener("click", () => {
+      if (reason.value.trim().length < 5) { msg.className = "small err"; msg.textContent = "Please give a reason (at least 5 characters)."; return; }
+      send({ action: "override", supplier_id: pick.value, reason: reason.value }, [approve, other, confirm]);
+    });
+
+    box.append(el("h2", {}, "Your decision"), note,
+      el("div", { class: "row" }, approve, ranked.length > 1 ? other : null), overrideForm, msg);
+    return box;
+  }
+
   function renderTable(compare){
     const rows=compare.ranked.map((r,i)=>{
       const why=el('details',{id:'why-'+r.supplier_id,class:'why-details'},el('summary',{class:'why-toggle'},'Why this supplier?',el('span',{class:'why-chevron','aria-hidden':'true'},'▸')),el('div',{class:'why'},DIMS.map(([key,label])=>[

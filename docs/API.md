@@ -22,6 +22,11 @@ Served by `app.py` next to the existing HTML page at `/`, which is unchanged.
 
 ## Errors
 
+In production, nginx also returns **429** (`Retry-After: 60`, same JSON error
+shape) when a client exceeds the rate limits in `deploy/nginx.conf`:
+`/api/recommend` allows 6 requests per minute per IP (bursts of 4) and 30 per
+minute site-wide, and other `/api/` routes allow 10 per second per IP.
+
 Every `/api/*` error uses the same shape. No stack traces are returned.
 
 ```json
@@ -152,6 +157,9 @@ Notes for consumers:
   in its own way.
   `gap` is always > 0, except for the `moq` lever, where it is the headroom
   `quantity - MOQ` and is 0 when the order is exactly at the MOQ.
+- The `price` lever also has `cut_pct`, the price cut needed to match the
+  benchmark. It differs from `gap`: 12.50 vs 10.90 is 14.7% above, but a 12.8%
+  cut. The text states both, for example "... — ask for a price match (a 12.8% cut)".
 - `injection_suppliers` covers **all** quotes, including excluded ones.
   `ranked[i].injection_flag` is true when that supplier is in the list. The
   detector has English and Chinese patterns, so both SUP-004 and SUP-007 are
@@ -203,8 +211,12 @@ curl -s -X POST localhost:8080/api/recommend -H 'Content-Type: application/json'
   content as one plain-text block, for the HTML page. `recommendation` is
   `null` only when there are no eligible quotes.
 - `agent.source` says who wrote the text:
-  - `"llm"`: the model's answer, which passed output validation (it must
-    recommend the #1 supplier by score and only name suppliers in the input).
+  - `"llm"`: the model's answer, which passed output validation. It must
+    recommend the #1 supplier by score and only name suppliers in the input.
+    Every number in its text must also appear in the data it was given
+    (rounding and 0.97 ↔ 97% are accepted, small integers up to 10 are always
+    allowed), and a "reduce the price by x%" point must use `cut_pct`, not the
+    "x% above" gap. A rejected answer gets one repair turn.
   - `"offline"`: no gateway key; a template built from the scores and levers.
   - `"fallback"`: a key is set but the gateway failed or the model's answer
     was rejected twice; the same template is shown and `agent.errors` says why.
@@ -227,6 +239,37 @@ curl -s -X POST localhost:8080/api/recommend -H 'Content-Type: application/json'
   "fallback"` with status 200. A 502 now means an unexpected bug in the
   agent. The response still includes the numbers:
   `{"error": "agent narration failed (RuntimeError)", "compare": {...}}`.
+
+## POST /api/decisions
+
+Human-in-the-loop: the buyer approves the recommendation or overrides it. The
+decision is appended to `decisions.jsonl` as a second record with the same
+`request_id` and `"type": "human_decision"`. **Nothing is ordered.**
+
+```bash
+curl -s -X POST localhost:8080/api/decisions -H 'Content-Type: application/json' \
+  -d '{"request_id":"req-c331c9b3","action":"override","supplier_id":"SUP-006",
+       "reason":"Existing framework contract"}'
+```
+```json
+{"decision": {"type": "human_decision", "request_id": "req-c331c9b3",
+  "timestamp": "2026-09-27T03:15:12+00:00", "action": "override",
+  "supplier_id": "SUP-006", "recommended_supplier_id": "SUP-001",
+  "agrees_with_agent": false, "reason": "Existing framework contract",
+  "order_placed": false}}
+```
+
+| Rule | Status |
+|---|---|
+| `request_id`, `action`, `supplier_id` must be non-empty strings; `action` is `approve` or `override` | 400 |
+| `approve` must name the recommended supplier | 400 |
+| `override` must name another supplier from that comparison and give a reason of 5-500 characters | 400 |
+| unknown `request_id` | 404 |
+| the request already has a decision (the log is append-only), or it had no eligible supplier | 409 |
+| recorded | **201** |
+
+A file lock around the check and the append makes "one decision per request"
+hold across gunicorn workers.
 
 ## Python API: `agent.compare(sku, quotes=None, weights=None, quantity=None)`
 

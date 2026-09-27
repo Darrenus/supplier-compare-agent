@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: pytest + eval (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9: the team's local venvs; 3.12: Ubuntu 24.04 on the Lightsail box.
+        python: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+      - name: Unit and API tests
+        # No gateway secrets here: tests/conftest.py forces offline mode.
+        run: python -m pytest -q
+      - name: Eval (golden + adversarial)
+        # Offline cases only; the live-LLM case reports SKIPPED without a key.
+        run: python eval/run_eval.py
+
+  deploy-config:
+    name: deploy config (nginx 1.24 + shell)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: nginx -t (same major version as Ubuntu 24.04)
+        run: |
+          docker run --rm \
+            -v "$PWD/deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro" \
+            nginx:1.24 nginx -t
+      - name: bash -n deploy scripts
+        run: for f in deploy/*.sh; do bash -n "$f" && echo "ok $f"; done

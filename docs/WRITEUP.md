@@ -35,7 +35,7 @@ constraints, reads the explanation, and makes the decision.
                  Browser (templates/index.html: weight sliders, qty / max-lead inputs)
                         │  fetch JSON                       ▲  DOM built with textContent only
                         ▼                                   │
-   nginx :80 ──► gunicorn :8080 (2 workers x 4 threads, --timeout 180) ──► app.py (Flask)
+   nginx :80 (rate limits) ──► gunicorn :8080 (2 workers x 4 threads) ──► app.py (Flask)
                                                                              │
           ┌───────────────────────────────┬──────────────────────────────────┤
           ▼                               ▼                                  ▼
@@ -56,7 +56,16 @@ constraints, reads the explanation, and makes the decision.
                                                           │ else fallback template
                                                           ▼
                                             observability.py ──► decisions.jsonl
+                                                                        ▲
+   Browser "Your decision" ──► POST /api/decisions ──► record_human_decision
 ```
+
+**Page flow.** On **Compare suppliers** the page sends `POST /api/compare` and
+`POST /api/recommend` together. The ranking table, exclusions and injection warning
+render as soon as `/api/compare` answers (about 0.1 s). The recommendation slot shows a
+live counter until the agent's answer arrives (usually 20–40 s). If the agent fails
+(502) or is rate-limited (429), only that slot shows the reason. Under the
+recommendation, the buyer approves it or overrides it (Section 6).
 
 **Request flow: `POST /api/compare`** (no LLM)
 1. `app._parse_compare_body` checks the shape: body is a JSON object, `sku` is a
@@ -95,10 +104,10 @@ constraints, reads the explanation, and makes the decision.
 | Guardrails | `security.py` | Hardened system prompt, injection detector (EN + ZH), delimiter wrapping |
 | Agent | `agent.py` | Prompt building, JSON tool-call loop, output validation, fallback |
 | LLM client | `gateway_client.py` | Ollama/OpenAI-compatible gateway calls, retries, token usage |
-| Observability | `observability.py` | Appends a decision record to `decisions.jsonl` |
-| Web + API | `app.py`, `templates/index.html` | Flask routes, JSON API, interactive page |
-| Evaluation | `eval/cases.py`, `eval/run_eval.py`, `tests/`, `scripts/` | Golden + adversarial cases, 93 pytest tests, live-site checks |
-| Deployment | `deploy/` | Lightsail setup: gunicorn, nginx, systemd |
+| Observability | `observability.py` | Appends the agent's decision record and the buyer's decision to `decisions.jsonl` |
+| Web + API | `app.py`, `templates/index.html` | Flask routes, JSON API (incl. `/api/decisions`), interactive page |
+| Evaluation | `eval/cases.py`, `eval/run_eval.py`, `tests/`, `scripts/` | Golden + adversarial cases, 104 pytest tests, live-site checks, GitHub Actions CI |
+| Deployment | `deploy/` | Lightsail setup: gunicorn, nginx (with rate limits), systemd |
 
 ## 3. Data model and mock-data assumptions
 
@@ -199,15 +208,17 @@ suppliers (`TOP_N_LEVERS = 3`), each against the best-in-class benchmark:
 
 | Lever | Condition | Gap |
 |---|---|---|
-| price | above the cheapest (skipped if benchmark price is 0) | `(p − p_best)/p_best × 100` % |
+| price | above the cheapest (skipped if benchmark price is 0) | `(p − p_best)/p_best × 100` %, plus `cut_pct = (p − p_best)/p × 100` |
 | lead_time | slower than the fastest | days |
 | payment_terms | shorter net days than the best | days |
 | on_time_delivery_rate | below the best OTD | percentage points |
 | moq | `moq ≤ quantity < 1.25 × moq` (`MOQ_HEADROOM_RATIO`) | units of headroom |
 
 Example (BRK-100, Acme): "Price is 14.7% above Meridian Industrial Supply (SGD 10.90)
-— ask for a price match", plus the lead-time (9 d), payment-terms (30 d) and OTD
-(2.0 pp) levers.
+— ask for a price match (a 12.8% cut)", plus the lead-time (9 d), payment-terms (30 d) and OTD
+(2.0 pp) levers. Both percentages are stated because they differ: 12.50 is 14.7%
+above 10.90, but matching it needs a 12.8% cut. An early live run showed Claude
+calling 14.7% "a price reduction", which led to the numeric checks in Section 5.
 
 ## 5. Agent design (`agent.py`)
 
@@ -257,8 +268,17 @@ tool-call protocol**:
    - `risks` must be a list of strings.
    - Lists are capped at 5 items.
    - Any `SUP-n` id mentioned in the text must be one of the compared suppliers.
+   - **Numeric grounding:** every number in the rationale, negotiation points and
+     risks must appear in the data the model was shown (the prompt plus tool results).
+     Rounding (0.70 for 0.6998) and percent forms (97% for 0.97) are accepted, small
+     integers up to 10 are always allowed, and ids such as `SUP-001` are ignored. The
+     model therefore cannot invent or recompute figures.
+   - **Price cut:** a point that asks to reduce, cut or discount the price by x% must
+     use the lever's `cut_pct`, not the "x% above" gap.
 
-   On failure the errors are sent back **once** (`MAX_REPAIRS = 1`).
+   On failure the errors are sent back **once** (`MAX_REPAIRS = 1`). Only the JSON of
+   each model reply is kept in the conversation history: a verbose reply (about 5 KB of
+   prose) would otherwise push the repair request over the gateway's 8 KiB WAF limit.
 6. **Fallback.** If there is no gateway key (`source="offline"`), or the gateway fails
    or validation fails twice (`source="fallback"`, `validated=false`), then
    `fallback_recommendation` builds the same schema purely from code. The rationale
@@ -284,6 +304,13 @@ or the `.env.example` placeholder key, counts as "no key", so the app stays offl
 - The UI states "The agent only recommends; a human buyer places the order".
 - The human controls the weights and hard constraints, and sees the full ranking,
   exclusions and per-dimension breakdown, not just one answer.
+- **The human's decision is recorded.** Under each recommendation the buyer can
+  **approve** it, or **override** it with another supplier from the same comparison
+  and a required reason (`POST /api/decisions`). The decision is appended to
+  `decisions.jsonl` as a `human_decision` record with the same `request_id`, including
+  `agrees_with_agent` and `order_placed: false`. Each request can be decided once
+  (409 afterwards), and a file lock keeps this true across gunicorn workers. The audit
+  trail therefore shows both what the agent recommended and what the human did.
 
 **Prompt-injection isolation (#5).**
 - *Delimiting:* all supplier text reaches the model only inside
@@ -322,6 +349,11 @@ browser.
 - Strict input validation (400/404/405).
 - A uniform JSON error shape, and stack traces are never returned.
 - nginx `client_max_body_size 64k`.
+- **Rate limits** (nginx): the LLM endpoints (`POST /api/recommend` and the legacy
+  `POST /` form) allow 6 requests per minute per IP (bursts of 4) and 30 per minute
+  site-wide; other `/api/` routes allow 10 per second per IP. Over the limit, the
+  response is 429 with `Retry-After: 60`. This keeps a public site from draining the
+  team's shared gateway.
 - The gateway key lives only in `.env` (git-ignored) on the server. It is copied over
   SSH by `deploy.sh` and set to `chmod 600`.
 
@@ -333,7 +365,10 @@ appends one JSON line to `decisions.jsonl` (git-ignored) with these fields:
 `tool_calls` (each with args and any scope error), `scores` {supplier_id: score},
 `decision` (Top 3 ids), `recommended_supplier_id`, `rationale`, `injection_flag`,
 `injection_details`, `source` (llm/offline/fallback), `usage` {llm_calls,
-input_tokens, output_tokens} and `errors`. The UI shows `request_id`, LLM calls and
+input_tokens, output_tokens} and `errors`. The buyer's decision is a second line with
+the same `request_id`: `type: "human_decision"`, `action` (approve/override),
+`supplier_id`, `recommended_supplier_id`, `agrees_with_agent`, `reason`,
+`order_placed: false`. The UI shows `request_id`, LLM calls and
 tokens under each recommendation, so a screen can be matched to its log line. The
 "Why this supplier?" panel shows each dimension's weight, normalised value and weighted
 contribution.
@@ -354,8 +389,8 @@ offline.
 Result on the current code: **7/7 passed (100%)**. There is also 1 optional live-LLM
 case (`llm_narration_validates_supplier`), which is skipped when no gateway key is set.
 
-**Unit and API tests**, `pytest`: **93 passed** (test_api 36, test_compare 30,
-test_agent 21, test_scoring 6). `tests/conftest.py` forces offline mode and redirects
+**Unit and API tests**, `pytest`: **104 passed** (test_api 41, test_compare 30,
+test_agent 27, test_scoring 6). `tests/conftest.py` forces offline mode and redirects
 the decision log, so tests never spend tokens. The agent tests replace the gateway with
 scripted replies and cover:
 - the golden path and the tool-call-then-answer path
@@ -368,6 +403,17 @@ scripted replies and cover:
 - injected text never reaching the LLM, and delimiter break-out
 - prompt and tool follow-up sizes staying under the 8 KiB WAF limit
 - the agent's negotiation levers (including the MOQ lever) matching `/api/compare`
+- numeric grounding: the exact live answer with "reduction of 14.7%" is rejected and
+  repaired to 12.8%, invented numbers fall back, and rounding and percent forms pass
+- a verbose reply still leaving the repair request under 8 KiB
+
+The API tests also cover `/api/decisions`: approve and override rules, 404 and 409,
+the append-only trail, and 8 concurrent submissions recording exactly one decision.
+
+**Continuous integration.** A GitHub Actions workflow runs on every pull request and
+on `main`. It runs `pytest` and `eval/run_eval.py` on Python 3.9 and 3.12 (the server's
+version), `nginx -t` on the deploy config with nginx 1.24, and `bash -n` on the deploy
+scripts. It uses no secrets and never calls the gateway.
 
 **Live-site checks.** Two scripts run against the deployed site before a demo:
 - `scripts/check_live.py`: 13 HTTP checks (pages, every endpoint, all 5 SKUs, and
@@ -375,9 +421,11 @@ scripted replies and cover:
 - `scripts/demo_scenarios.py`: the 7 demo scenarios with their expected winners,
   exclusions, injection flags and error codes. It passes 7/7 on the live site.
 
-A live `/api/recommend` call on BRK-100 returned `source="llm"` and `validated=true`,
-with the injection flag set. It used 1 LLM call, about 5.7k input and 1.5k output
-tokens, and produced no errors.
+**Live LLM check.** With the real gateway and default weights, all 5 SKUs returned
+`source="llm"` and `validated=true`. Four needed 1 LLM call. For CBL-300 the first
+answer contained a number the model had computed itself (0.141); validation rejected
+it, the repair turn fixed it, and the second answer passed. BRK-100 now asks for a
+12.8% price cut, the correct figure.
 
 ## 8. Deployment
 
@@ -388,7 +436,8 @@ The app is hosted on AWS Lightsail (Ubuntu 24.04) at <http://56.10.70.203>.
   and installs `requirements.txt` plus gunicorn. It then installs the systemd unit
   `supplier-agent.service` (gunicorn `--workers 2 --threads 4 --timeout 180`, bound to
   `127.0.0.1:8080`, `Restart=always`) and the nginx site (port 80 → 8080,
-  `proxy_read_timeout 180s` for the LLM path). Finally it curls `/api/health`.
+  `proxy_read_timeout 180s` for the LLM path, rate limits as in Section 6). Finally it
+  runs `nginx -t`, reloads nginx and curls `/api/health`.
 - **Health endpoint:** `GET /api/health` returns
   `{"status": "ok", "skus": 5, "gateway_configured": true|false}`. The live site returned
   `gateway_configured: true` when this was written.
@@ -404,10 +453,13 @@ The full contract, with real examples, is in [`docs/API.md`](API.md).
 | GET | `/api/quotes?sku=` | Raw quotes for one SKU | no |
 | POST | `/api/compare` | Ranking, exclusions, best-in-class, levers, injection flags | no |
 | POST | `/api/recommend` | `compare` plus the agent's validated recommendation | yes, if a key is set |
+| POST | `/api/decisions` | Record the buyer's approve / override of a recommendation | no |
 
-The body for both POST endpoints is `{"sku", "weights"?, "quantity"?,
-"max_lead_time_days"?}`. The error statuses are 400, 404, 405, 500, and 502 (for
-`/api/recommend` only, and the 502 body still carries `compare`).
+The body for `/api/compare` and `/api/recommend` is `{"sku", "weights"?, "quantity"?,
+"max_lead_time_days"?}`. The error statuses are 400, 404, 405, 500, 502 (for
+`/api/recommend` only, and the 502 body still carries `compare`), 409 (a request that
+already has a decision) and 429 (rate limit). `/api/decisions` returns 201 when it
+records a decision.
 
 ## 10. Limitations and future work
 
@@ -422,16 +474,19 @@ The body for both POST endpoints is `{"sku", "weights"?, "quantity"?,
   bundle pricing, split awards and supplier capacity limits.
 - **Scoring model.** Min-max scores are relative to the candidate set and sensitive to
   outliers. Early-payment discounts and volume price breaks are not modelled.
-- **Validation depth.** The validator enforces the recommended supplier, the schema and
-  known supplier ids. Numbers inside the rationale are required by the prompt to be
-  copied, but they are not re-checked in code. The injection detector is pattern-based,
-  and the design relies on isolation and code-side ranking rather than on detection
-  alone.
+- **Validation depth.** The validator enforces the recommended supplier, the schema,
+  known supplier ids, and that every number is grounded in the data. It checks the
+  meaning of a number only for the price cut; other misphrasings of a correct number
+  are not caught. The injection detector is pattern-based, and the design relies on
+  isolation and code-side ranking rather than on detection alone.
+- **Operations.** The site is HTTP only (no domain for a TLS certificate), there are no
+  user accounts, so decisions are not attributed to a named buyer, and
+  `decisions.jsonl` has no rotation.
 - **Integration and workflow.** Next steps are read-only ERP/e-procurement connectors
   for quotes and supplier scorecards, and an approval workflow where the recommendation
-  and decision log go to an approver, with the final order still placed by a human.
-  Only `/api/recommend` and the HTML page write to the decision log; `/api/compare` does
-  not.
+  and decision log go to a named approver, with the final order still placed by a
+  human. Only `/api/recommend`, the HTML page and `/api/decisions` write to the decision
+  log; `/api/compare` does not.
 
 ## 11. Business value
 
